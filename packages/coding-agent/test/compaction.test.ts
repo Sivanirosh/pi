@@ -346,6 +346,31 @@ describe("findCutPoint", () => {
 			expect(result.turnStartIndex).toBe(2); // Turn 2 starts at index 2
 		}
 	});
+
+	it("should not select excluded custom messages as cut points", () => {
+		const user = createMessageEntry(createUserMessage("inspect file"));
+		const assistantWithToolCall = createMessageEntry({
+			...createAssistantMessage("calling tool"),
+			content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "file.ts" } }],
+		});
+		const toolResult = createMessageEntry({
+			role: "toolResult",
+			toolCallId: "call-1",
+			toolName: "read",
+			content: [{ type: "text", text: "x".repeat(1000) }],
+			isError: false,
+			timestamp: Date.now(),
+		});
+		const excludedCustom = createCustomMessageEntry("tool finished", true);
+		const assistantFinal = createMessageEntry(createAssistantMessage("done"));
+		const entries = [user, assistantWithToolCall, toolResult, excludedCustom, assistantFinal];
+
+		const result = findCutPoint(entries, 0, entries.length, 2);
+
+		expect(result.firstKeptEntryIndex).toBe(4);
+		expect(result.turnStartIndex).toBe(0);
+		expect(result.isSplitTurn).toBe(true);
+	});
 });
 
 describe("buildSessionContext", () => {
@@ -447,6 +472,39 @@ describe("prepareCompaction with custom messages", () => {
 		expect(preparation).toBeDefined();
 		expect(preparation!.tokensBefore).toBe(1);
 		expect(preparation!.messagesToSummarize).toEqual([]);
+	});
+
+	it("should ignore excluded custom messages when finding split-turn prefixes", () => {
+		const user = createMessageEntry(createUserMessage("inspect file"));
+		const assistantWithToolCall = createMessageEntry({
+			...createAssistantMessage("calling tool"),
+			content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "file.ts" } }],
+		});
+		const excludedCustom = createCustomMessageEntry("tool is running", true);
+		const toolResult = createMessageEntry({
+			role: "toolResult",
+			toolCallId: "call-1",
+			toolName: "read",
+			content: [{ type: "text", text: "x".repeat(1000) }],
+			isError: false,
+			timestamp: Date.now(),
+		});
+		const assistantFinal = createMessageEntry(createAssistantMessage("done"));
+
+		const preparation = prepareCompaction([user, assistantWithToolCall, excludedCustom, toolResult, assistantFinal], {
+			enabled: true,
+			reserveTokens: 0,
+			keepRecentTokens: 1,
+		});
+
+		expect(preparation).toBeDefined();
+		expect(preparation!.isSplitTurn).toBe(true);
+		expect(preparation!.firstKeptEntryId).toBe(assistantFinal.id);
+		expect(preparation!.turnPrefixMessages.map((message) => message.role)).toEqual([
+			"user",
+			"assistant",
+			"toolResult",
+		]);
 	});
 });
 

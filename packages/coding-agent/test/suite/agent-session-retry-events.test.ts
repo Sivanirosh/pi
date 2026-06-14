@@ -52,6 +52,41 @@ describe("AgentSession retry and event characterization", () => {
 		expect(harness.session.isRetrying).toBe(false);
 	});
 
+	it("retries when an excluded custom message follows the transient error", async () => {
+		const harness = await createHarness({
+			settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } },
+			extensionFactories: [
+				(pi) => {
+					let sent = false;
+					pi.on("message_end", async (event) => {
+						if (sent || event.message.role !== "assistant" || event.message.stopReason !== "error") return;
+						sent = true;
+						pi.sendMessage({
+							customType: "status",
+							content: "display only",
+							display: true,
+							details: {},
+							excludeFromContext: true,
+						});
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
+			fauxAssistantMessage("recovered"),
+		]);
+
+		await harness.session.prompt("test");
+
+		expect(harness.faux.state.callCount).toBe(2);
+		expect(
+			harness.session.messages.some((message) => message.role === "custom" && message.customType === "status"),
+		).toBe(true);
+		expect(harness.session.messages[harness.session.messages.length - 1]?.role).toBe("assistant");
+	});
+
 	it("retries multiple transient failures and succeeds on the final attempt", async () => {
 		const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } } });
 		harnesses.push(harness);

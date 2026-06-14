@@ -334,13 +334,14 @@ export class Agent {
 		await this.runPromptMessages(messages);
 	}
 
-	/** Continue from the current transcript. The last message must be a user or tool-result message. */
+	/** Continue from the current transcript. The last LLM-context message must be a user or tool-result message. */
 	async continue(): Promise<void> {
 		if (this.activeRun) {
 			throw new Error("Agent is already processing. Wait for completion before continuing.");
 		}
 
-		const lastMessage = this._state.messages[this._state.messages.length - 1];
+		const llmMessages = await this.convertToLlm(this._state.messages);
+		const lastMessage = llmMessages[llmMessages.length - 1];
 		if (!lastMessage) {
 			throw new Error("No messages to continue from");
 		}

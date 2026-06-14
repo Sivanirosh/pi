@@ -313,10 +313,20 @@ export function estimateTokens(message: AgentMessage): number {
  * and will be kept.
  * BashExecutionMessage is treated like a user message (user-initiated context).
  */
+function isExcludedCustomContextEntry(entry: SessionEntry): boolean {
+	return (
+		(entry.type === "custom_message" && entry.excludeFromContext === true) ||
+		(entry.type === "message" && entry.message.role === "custom" && entry.message.excludeFromContext === true)
+	);
+}
+
 function findValidCutPoints(entries: SessionEntry[], startIndex: number, endIndex: number): number[] {
 	const cutPoints: number[] = [];
 	for (let i = startIndex; i < endIndex; i++) {
 		const entry = entries[i];
+		if (isExcludedCustomContextEntry(entry)) {
+			continue;
+		}
 		switch (entry.type) {
 			case "message": {
 				const role = entry.message.role;
@@ -361,6 +371,9 @@ function findValidCutPoints(entries: SessionEntry[], startIndex: number, endInde
 export function findTurnStartIndex(entries: SessionEntry[], entryIndex: number, startIndex: number): number {
 	for (let i = entryIndex; i >= startIndex; i--) {
 		const entry = entries[i];
+		if (isExcludedCustomContextEntry(entry)) {
+			continue;
+		}
 		// branch_summary and custom_message are user-role messages, can start a turn
 		if (entry.type === "branch_summary" || entry.type === "custom_message") {
 			return i;
@@ -442,6 +455,9 @@ export function findCutPoint(
 		const prevEntry = entries[cutIndex - 1];
 		// Stop at session header or compaction boundaries
 		if (prevEntry.type === "compaction") {
+			break;
+		}
+		if (isExcludedCustomContextEntry(prevEntry)) {
 			break;
 		}
 		if (prevEntry.type === "message") {

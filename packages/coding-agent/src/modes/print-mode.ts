@@ -128,10 +128,19 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 
 		if (mode === "text") {
 			const state = session.state;
-			const lastMessage = state.messages[state.messages.length - 1];
+			let assistantMsg: AssistantMessage | undefined;
+			for (let i = state.messages.length - 1; i >= 0; i--) {
+				const message = state.messages[i];
+				if (message.role === "custom" && message.excludeFromContext) {
+					continue;
+				}
+				if (message.role === "assistant") {
+					assistantMsg = message;
+				}
+				break;
+			}
 
-			if (lastMessage?.role === "assistant") {
-				const assistantMsg = lastMessage as AssistantMessage;
+			if (assistantMsg) {
 				if (assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted") {
 					console.error(assistantMsg.errorMessage || `Request ${assistantMsg.stopReason}`);
 					exitCode = 1;

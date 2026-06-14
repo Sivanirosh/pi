@@ -269,10 +269,20 @@ export function estimateTokens(message: AgentMessage): number {
 
 	return 0;
 }
+function isExcludedCustomContextEntry(entry: SessionTreeEntry): boolean {
+	return (
+		(entry.type === "custom_message" && entry.excludeFromContext === true) ||
+		(entry.type === "message" && entry.message.role === "custom" && entry.message.excludeFromContext === true)
+	);
+}
+
 function findValidCutPoints(entries: SessionTreeEntry[], startIndex: number, endIndex: number): number[] {
 	const cutPoints: number[] = [];
 	for (let i = startIndex; i < endIndex; i++) {
 		const entry = entries[i];
+		if (isExcludedCustomContextEntry(entry)) {
+			continue;
+		}
 		switch (entry.type) {
 			case "message": {
 				const role = entry.message.role;
@@ -313,6 +323,9 @@ function findValidCutPoints(entries: SessionTreeEntry[], startIndex: number, end
 export function findTurnStartIndex(entries: SessionTreeEntry[], entryIndex: number, startIndex: number): number {
 	for (let i = entryIndex; i >= startIndex; i--) {
 		const entry = entries[i];
+		if (isExcludedCustomContextEntry(entry)) {
+			continue;
+		}
 		if (entry.type === "branch_summary" || entry.type === "custom_message") {
 			return i;
 		}
@@ -369,6 +382,9 @@ export function findCutPoint(
 	while (cutIndex > startIndex) {
 		const prevEntry = entries[cutIndex - 1];
 		if (prevEntry.type === "compaction") {
+			break;
+		}
+		if (isExcludedCustomContextEntry(prevEntry)) {
 			break;
 		}
 		if (prevEntry.type === "message") {

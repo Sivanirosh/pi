@@ -514,12 +514,20 @@ describe("AgentSession queue characterization", () => {
 
 	it("delivers follow-ups queued during agent_end", async () => {
 		let sent = false;
+		let sawFollowUpInProvider = false;
 		const harness = await createHarness({
 			extensionFactories: [
 				(pi: ExtensionAPI) => {
 					pi.on("agent_end", async () => {
 						if (sent) return;
 						sent = true;
+						pi.sendMessage({
+							customType: "status",
+							content: "display only",
+							display: true,
+							details: {},
+							excludeFromContext: true,
+						});
 						pi.sendUserMessage("conflict report", { deliverAs: "followUp" });
 					});
 				},
@@ -527,11 +535,23 @@ describe("AgentSession queue characterization", () => {
 		});
 		harnesses.push(harness);
 
-		harness.setResponses([fauxAssistantMessage("reply"), fauxAssistantMessage("follow-up reply")]);
+		harness.setResponses([
+			fauxAssistantMessage("reply"),
+			(context) => {
+				sawFollowUpInProvider = context.messages.some(
+					(message) => message.role === "user" && getMessageText(message) === "conflict report",
+				);
+				return fauxAssistantMessage("follow-up reply");
+			},
+		]);
 
 		await harness.session.prompt("hello");
 		await harness.session.agent.waitForIdle();
 
+		expect(sawFollowUpInProvider).toBe(true);
 		expect(getUserTexts(harness)).toEqual(["hello", "conflict report"]);
+		expect(
+			harness.session.messages.some((message) => message.role === "custom" && message.customType === "status"),
+		).toBe(true);
 	});
 });

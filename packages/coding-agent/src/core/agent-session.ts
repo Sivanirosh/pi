@@ -583,6 +583,25 @@ export class AgentSession {
 		return undefined;
 	}
 
+	private _removeAssistantMessageFromState(target: AssistantMessage): void {
+		const messages = this.agent.state.messages;
+		for (let i = messages.length - 1; i >= 0; i--) {
+			const message = messages[i];
+			if (
+				message === target ||
+				(message.role === "assistant" &&
+					message.timestamp === target.timestamp &&
+					message.provider === target.provider &&
+					message.model === target.model &&
+					message.stopReason === target.stopReason &&
+					message.errorMessage === target.errorMessage)
+			) {
+				this.agent.state.messages = [...messages.slice(0, i), ...messages.slice(i + 1)];
+				return;
+			}
+		}
+	}
+
 	private _replaceMessageInPlace(target: AgentMessage, replacement: AgentMessage): void {
 		// Agent-core stores the finalized message object in its state before emitting message_end.
 		// SessionManager persistence happens later in _handleAgentEvent() with event.message.
@@ -1850,11 +1869,8 @@ export class AgentSession {
 			this._overflowRecoveryAttempted = true;
 			// Remove the error message from agent state (it IS saved to session for history,
 			// but we don't want it in context for the retry)
-			const messages = this.agent.state.messages;
-			if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
-				this.agent.state.messages = messages.slice(0, -1);
-			}
-			return await this._runAutoCompaction("overflow", true);
+			this._removeAssistantMessageFromState(assistantMessage);
+			return await this._runAutoCompaction("overflow", true, assistantMessage);
 		}
 
 		// Case 2: Threshold - context is getting large
@@ -1889,7 +1905,11 @@ export class AgentSession {
 	/**
 	 * Internal: Run auto-compaction with events.
 	 */
-	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
+	private async _runAutoCompaction(
+		reason: "overflow" | "threshold",
+		willRetry: boolean,
+		retryAssistantMessage?: AssistantMessage,
+	): Promise<boolean> {
 		const settings = this.settingsManager.getCompactionSettings();
 
 		this._emit({ type: "compaction_start", reason });
@@ -2037,10 +2057,8 @@ export class AgentSession {
 			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
 
 			if (willRetry) {
-				const messages = this.agent.state.messages;
-				const lastMsg = messages[messages.length - 1];
-				if (lastMsg?.role === "assistant" && (lastMsg as AssistantMessage).stopReason === "error") {
-					this.agent.state.messages = messages.slice(0, -1);
+				if (retryAssistantMessage) {
+					this._removeAssistantMessageFromState(retryAssistantMessage);
 				}
 				return true;
 			}
@@ -2525,10 +2543,7 @@ export class AgentSession {
 		});
 
 		// Remove error message from agent state (keep in session for history)
-		const messages = this.agent.state.messages;
-		if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
-			this.agent.state.messages = messages.slice(0, -1);
-		}
+		this._removeAssistantMessageFromState(message);
 
 		// Wait with exponential backoff (abortable)
 		this._retryAbortController = new AbortController();

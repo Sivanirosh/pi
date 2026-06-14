@@ -1,7 +1,19 @@
-import { type AssistantMessage, type AssistantMessageEvent, EventStream, getModel } from "@earendil-works/pi-ai";
+import {
+	type AssistantMessage,
+	type AssistantMessageEvent,
+	EventStream,
+	getModel,
+	type Message,
+} from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
-import { Agent, type AgentEvent, type AgentTool, type AgentToolUpdateCallback } from "../src/index.ts";
+import {
+	Agent,
+	type AgentEvent,
+	type AgentMessage,
+	type AgentTool,
+	type AgentToolUpdateCallback,
+} from "../src/index.ts";
 
 // Mock stream that mimics AssistantMessageEventStream
 class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
@@ -584,6 +596,54 @@ describe("Agent", () => {
 
 		expect(hasQueuedFollowUp).toBe(true);
 		expect(agent.state.messages[agent.state.messages.length - 1].role).toBe("assistant");
+	});
+
+	it("continue() should process queued follow-up messages after filtered state messages", async () => {
+		let providerCallCount = 0;
+		let providerMessages: Message[] = [];
+		const displayOnlyMessage = {
+			role: "displayOnly",
+			content: "status",
+			timestamp: Date.now(),
+		} as unknown as AgentMessage;
+		const agent = new Agent({
+			convertToLlm: (messages) =>
+				messages
+					.filter((message) => (message as { role: string }).role !== "displayOnly")
+					.filter(
+						(message) => message.role === "user" || message.role === "assistant" || message.role === "toolResult",
+					) as Message[],
+			streamFn: (_model, context) => {
+				providerCallCount++;
+				providerMessages = context.messages;
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					stream.push({ type: "done", reason: "stop", message: createAssistantMessage("Processed") });
+				});
+				return stream;
+			},
+		});
+
+		agent.state.messages = [
+			{
+				role: "user",
+				content: [{ type: "text", text: "Initial" }],
+				timestamp: Date.now() - 10,
+			},
+			createAssistantMessage("Initial response"),
+			displayOnlyMessage,
+		];
+		agent.followUp({
+			role: "user",
+			content: [{ type: "text", text: "Queued follow-up" }],
+			timestamp: Date.now(),
+		});
+
+		await agent.continue();
+
+		expect(providerCallCount).toBe(1);
+		expect(providerMessages[providerMessages.length - 1]?.role).toBe("user");
+		expect(agent.state.messages).toContain(displayOnlyMessage);
 	});
 
 	it("continue() should keep one-at-a-time steering semantics from assistant tail", async () => {
