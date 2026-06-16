@@ -153,7 +153,7 @@ async function findLocalSessionByExactId(
 	cwd: string,
 	sessionDir?: string,
 ): Promise<{ type: "local"; path: string } | undefined> {
-	const localSessions = await SessionManager.list(cwd, sessionDir);
+	const localSessions = await SessionManager.listThin(cwd, sessionDir);
 	const localMatch = localSessions.find((s) => s.id === sessionId);
 	return localMatch ? { type: "local", path: localMatch.path } : undefined;
 }
@@ -165,7 +165,7 @@ async function resolveSessionPath(sessionArg: string, cwd: string, sessionDir?: 
 	}
 
 	// Try to match as session ID in current project first
-	const localSessions = await SessionManager.list(cwd, sessionDir);
+	const localSessions = await SessionManager.listThin(cwd, sessionDir);
 	const localMatch =
 		localSessions.find((s) => s.id === sessionArg) ?? localSessions.find((s) => s.id.startsWith(sessionArg));
 
@@ -174,7 +174,7 @@ async function resolveSessionPath(sessionArg: string, cwd: string, sessionDir?: 
 	}
 
 	// Try global search across all projects
-	const allSessions = await SessionManager.listAll(sessionDir);
+	const allSessions = await SessionManager.listAllThin(sessionDir);
 	const globalMatch =
 		allSessions.find((s) => s.id === sessionArg) ?? allSessions.find((s) => s.id.startsWith(sessionArg));
 

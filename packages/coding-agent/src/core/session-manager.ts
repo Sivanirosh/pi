@@ -586,6 +586,56 @@ function getMessageActivityTime(entry: SessionMessageEntry): number | undefined 
 	return Number.isNaN(t) ? undefined : t;
 }
 
+async function buildThinSessionInfo(filePath: string): Promise<SessionInfo | null> {
+	try {
+		const stats = await stat(filePath);
+		let header: SessionHeader | null = null;
+		let firstMessage = "";
+
+		const rl = createInterface({
+			input: createReadStream(filePath, { encoding: "utf8" }),
+			crlfDelay: Infinity,
+		});
+
+		for await (const line of rl) {
+			const entry = parseSessionEntryLine(line);
+			if (!entry) continue;
+
+			if (!header) {
+				if (entry.type !== "session") return null;
+				header = entry;
+				continue;
+			}
+
+			if (entry.type !== "message") continue;
+			const message = entry.message;
+			if (!isMessageWithContent(message) || message.role !== "user") continue;
+
+			firstMessage = extractTextContent(message);
+			if (firstMessage) {
+				rl.close();
+				break;
+			}
+		}
+
+		if (!header) return null;
+
+		return {
+			path: filePath,
+			id: header.id,
+			cwd: typeof header.cwd === "string" ? header.cwd : "",
+			parentSessionPath: header.parentSession,
+			created: new Date(header.timestamp),
+			modified: stats.mtime,
+			messageCount: 0,
+			firstMessage: firstMessage || "(no messages)",
+			allMessagesText: "",
+		};
+	} catch {
+		return null;
+	}
+}
+
 async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 	try {
 		const stats = await stat(filePath);
@@ -670,6 +720,46 @@ export type SessionListProgress = (loaded: number, total: number) => void;
 
 const MAX_CONCURRENT_SESSION_INFO_LOADS = 10;
 
+async function buildThinSessionInfosWithConcurrency(
+	files: string[],
+	onLoaded: () => void,
+): Promise<(SessionInfo | null)[]> {
+	const results: (SessionInfo | null)[] = new Array(files.length).fill(null);
+	const inFlight = new Set<Promise<void>>();
+	let nextIndex = 0;
+
+	const startNext = (): void => {
+		const index = nextIndex++;
+		const file = files[index];
+		if (!file) return;
+
+		let task: Promise<void>;
+		task = buildThinSessionInfo(file)
+			.then((info) => {
+				results[index] = info;
+			})
+			.catch(() => {
+				results[index] = null;
+			})
+			.finally(() => {
+				inFlight.delete(task);
+				onLoaded();
+			});
+		inFlight.add(task);
+	};
+
+	while (nextIndex < files.length || inFlight.size > 0) {
+		while (nextIndex < files.length && inFlight.size < MAX_CONCURRENT_SESSION_INFO_LOADS) {
+			startNext();
+		}
+		if (inFlight.size > 0) {
+			await Promise.race(inFlight);
+		}
+	}
+
+	return results;
+}
+
 async function buildSessionInfosWithConcurrency(
 	files: string[],
 	onLoaded: () => void,
@@ -708,6 +798,33 @@ async function buildSessionInfosWithConcurrency(
 	}
 
 	return results;
+}
+
+async function listThinSessionsFromDir(dir: string, onProgress?: SessionListProgress): Promise<SessionInfo[]> {
+	const sessions: SessionInfo[] = [];
+	if (!existsSync(dir)) {
+		return sessions;
+	}
+
+	try {
+		const dirEntries = await readdir(dir);
+		const files = dirEntries.filter((f) => f.endsWith(".jsonl")).map((f) => join(dir, f));
+
+		let loaded = 0;
+		const results = await buildThinSessionInfosWithConcurrency(files, () => {
+			loaded++;
+			onProgress?.(loaded, files.length);
+		});
+		for (const info of results) {
+			if (info) {
+				sessions.push(info);
+			}
+		}
+	} catch {
+		// Return empty list on error
+	}
+
+	return sessions;
 }
 
 async function listSessionsFromDir(
@@ -1493,6 +1610,24 @@ export class SessionManager {
 	}
 
 	/**
+	 * List sessions using stat mtime and only enough file content for initial display.
+	 * Full searchable text is intentionally omitted.
+	 * @param cwd Working directory (used to compute default session directory)
+	 * @param sessionDir Optional session directory. If omitted, uses default (~/.pi/agent/sessions/<encoded-cwd>/).
+	 * @param onProgress Optional callback for progress updates (loaded, total)
+	 */
+	static async listThin(cwd: string, sessionDir?: string, onProgress?: SessionListProgress): Promise<SessionInfo[]> {
+		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
+		const filterCwd = sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd);
+		const resolvedCwd = resolvePath(cwd);
+		const sessions = (await listThinSessionsFromDir(dir, onProgress)).filter(
+			(session) => !filterCwd || sessionCwdMatches(session.cwd, resolvedCwd),
+		);
+		sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
+		return sessions;
+	}
+
+	/**
 	 * List all sessions for a directory.
 	 * @param cwd Working directory (used to compute default session directory)
 	 * @param sessionDir Optional session directory. If omitted, uses default (~/.pi/agent/sessions/<encoded-cwd>/).
@@ -1507,6 +1642,69 @@ export class SessionManager {
 		);
 		sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
 		return sessions;
+	}
+
+	/**
+	 * List all sessions across all project directories using stat mtime and only enough file content for initial display.
+	 * Full searchable text is intentionally omitted.
+	 * @param onProgress Optional callback for progress updates (loaded, total)
+	 */
+	static async listAllThin(onProgress?: SessionListProgress): Promise<SessionInfo[]>;
+	static async listAllThin(sessionDir?: string, onProgress?: SessionListProgress): Promise<SessionInfo[]>;
+	static async listAllThin(
+		sessionDirOrOnProgress?: string | SessionListProgress,
+		onProgress?: SessionListProgress,
+	): Promise<SessionInfo[]> {
+		const customSessionDir =
+			typeof sessionDirOrOnProgress === "string" ? normalizePath(sessionDirOrOnProgress) : undefined;
+		const progress = typeof sessionDirOrOnProgress === "function" ? sessionDirOrOnProgress : onProgress;
+		if (customSessionDir) {
+			const sessions = await listThinSessionsFromDir(customSessionDir, progress);
+			sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
+			return sessions;
+		}
+
+		const sessionsDir = getSessionsDir();
+
+		try {
+			if (!existsSync(sessionsDir)) {
+				return [];
+			}
+			const entries = await readdir(sessionsDir, { withFileTypes: true });
+			const dirs = entries.filter((e) => e.isDirectory()).map((e) => join(sessionsDir, e.name));
+
+			let totalFiles = 0;
+			const dirFiles: string[][] = [];
+			for (const dir of dirs) {
+				try {
+					const files = (await readdir(dir)).filter((f) => f.endsWith(".jsonl"));
+					dirFiles.push(files.map((f) => join(dir, f)));
+					totalFiles += files.length;
+				} catch {
+					dirFiles.push([]);
+				}
+			}
+
+			let loaded = 0;
+			const sessions: SessionInfo[] = [];
+			const allFiles = dirFiles.flat();
+
+			const results = await buildThinSessionInfosWithConcurrency(allFiles, () => {
+				loaded++;
+				progress?.(loaded, totalFiles);
+			});
+
+			for (const info of results) {
+				if (info) {
+					sessions.push(info);
+				}
+			}
+
+			sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
+			return sessions;
+		} catch {
+			return [];
+		}
 	}
 
 	/**
