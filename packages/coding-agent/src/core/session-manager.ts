@@ -1610,6 +1610,13 @@ export class SessionManager {
 	}
 
 	/**
+	 * Hydrate a thin session listing with full searchable text.
+	 */
+	static async hydrateSessionForSearch(path: string): Promise<SessionInfo | null> {
+		return buildSessionInfo(path);
+	}
+
+	/**
 	 * List sessions using stat mtime and only enough file content for initial display.
 	 * Full searchable text is intentionally omitted.
 	 * @param cwd Working directory (used to compute default session directory)

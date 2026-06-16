@@ -624,6 +624,7 @@ class SessionList implements Component, Focusable {
 }
 
 type SessionsLoader = (onProgress?: SessionListProgress) => Promise<SessionInfo[]>;
+type SessionHydrator = (path: string) => Promise<SessionInfo | null>;
 
 /**
  * Delete a session file, trying the `trash` CLI first, then falling back to unlink
@@ -694,10 +695,12 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	private allSessions: SessionInfo[] | null = null;
 	private currentSessionsLoader: SessionsLoader;
 	private allSessionsLoader: SessionsLoader;
+	private hydrateSession?: SessionHydrator;
 	private requestRender: () => void;
 	private renameSession?: (sessionPath: string, currentName: string | undefined) => Promise<void>;
 	private currentLoading = false;
 	private allLoading = false;
+	private currentLoadSeq = 0;
 	private allLoadSeq = 0;
 
 	private mode: "list" | "rename" = "list";
@@ -743,6 +746,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			renameSession?: (sessionPath: string, currentName: string | undefined) => Promise<void>;
 			showRenameHint?: boolean;
 			keybindings?: KeybindingsManager;
+			hydrateSession?: SessionHydrator;
 		},
 		currentSessionFilePath?: string,
 	) {
@@ -750,6 +754,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		this.keybindings = options?.keybindings ?? KeybindingsManager.create();
 		this.currentSessionsLoader = currentSessionsLoader;
 		this.allSessionsLoader = allSessionsLoader;
+		this.hydrateSession = options?.hydrateSession;
 		this.requestRender = requestRender;
 		this.header = new SessionSelectorHeader(this.scope, this.sortMode, this.nameFilter, this.requestRender);
 		const renameSession = options?.renameSession;
@@ -907,6 +912,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 
 	private async loadScope(scope: SessionScope, reason: "initial" | "refresh" | "toggle"): Promise<void> {
 		const showCwd = scope === "all";
+		const seq = scope === "current" ? ++this.currentLoadSeq : ++this.allLoadSeq;
 
 		// Mark loading
 		if (scope === "current") {
@@ -915,14 +921,15 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			this.allLoading = true;
 		}
 
-		const seq = scope === "all" ? ++this.allLoadSeq : undefined;
 		this.header.setScope(scope);
 		this.header.setLoading(true);
 		this.requestRender();
 
+		const isCurrentLoad = (): boolean =>
+			scope === "current" ? seq === this.currentLoadSeq : seq === this.allLoadSeq;
+
 		const onProgress = (loaded: number, total: number) => {
-			if (scope !== this.scope) return;
-			if (seq !== undefined && seq !== this.allLoadSeq) return;
+			if (scope !== this.scope || !isCurrentLoad()) return;
 			this.header.setProgress(loaded, total);
 			this.requestRender();
 		};
@@ -932,6 +939,8 @@ export class SessionSelectorComponent extends Container implements Focusable {
 				? this.currentSessionsLoader(onProgress)
 				: this.allSessionsLoader(onProgress));
 
+			if (!isCurrentLoad()) return;
+
 			if (scope === "current") {
 				this.currentSessions = sessions;
 				this.currentLoading = false;
@@ -940,13 +949,16 @@ export class SessionSelectorComponent extends Container implements Focusable {
 				this.allLoading = false;
 			}
 
-			if (scope !== this.scope) return;
-			if (seq !== undefined && seq !== this.allLoadSeq) return;
+			if (scope === this.scope) {
+				this.header.setLoading(false);
+				this.sessionList.setSessions(sessions, showCwd);
+				this.requestRender();
+			}
 
-			this.header.setLoading(false);
-			this.sessionList.setSessions(sessions, showCwd);
-			this.requestRender();
+			void this.hydrateScopeForSearch(scope, seq, sessions);
 		} catch (err) {
+			if (!isCurrentLoad()) return;
+
 			if (scope === "current") {
 				this.currentLoading = false;
 			} else {
@@ -954,7 +966,6 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			}
 
 			if (scope !== this.scope) return;
-			if (seq !== undefined && seq !== this.allLoadSeq) return;
 
 			const message = err instanceof Error ? err.message : String(err);
 			this.header.setLoading(false);
@@ -963,6 +974,45 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			if (reason === "initial") {
 				this.sessionList.setSessions([], showCwd);
 			}
+			this.requestRender();
+		}
+	}
+
+	private async hydrateScopeForSearch(scope: SessionScope, seq: number, sessions: SessionInfo[]): Promise<void> {
+		const hydrateSession = this.hydrateSession;
+		if (!hydrateSession) return;
+
+		const isCurrentLoad = (): boolean =>
+			scope === "current" ? seq === this.currentLoadSeq : seq === this.allLoadSeq;
+		let lastRender = 0;
+
+		for (const session of sessions) {
+			if (!isCurrentLoad()) return;
+			const hydrated = await hydrateSession(session.path);
+			if (!hydrated || !isCurrentLoad()) continue;
+
+			const targetSessions = scope === "current" ? this.currentSessions : this.allSessions;
+			if (!targetSessions) continue;
+
+			const index = targetSessions.findIndex((candidate) => candidate.path === hydrated.path);
+			if (index < 0) continue;
+
+			const existing = targetSessions[index]!;
+			targetSessions[index] = { ...hydrated, modified: existing.modified };
+
+			if (scope === this.scope) {
+				const now = Date.now();
+				if (now - lastRender > 100) {
+					this.sessionList.setSessions(targetSessions, scope === "all");
+					this.requestRender();
+					lastRender = now;
+				}
+			}
+		}
+
+		if (scope === this.scope && isCurrentLoad()) {
+			const targetSessions = scope === "current" ? this.currentSessions : this.allSessions;
+			this.sessionList.setSessions(targetSessions ?? [], scope === "all");
 			this.requestRender();
 		}
 	}

@@ -8,11 +8,13 @@ import type { SessionInfo, SessionListProgress } from "../core/session-manager.t
 import { SessionSelectorComponent } from "../modes/interactive/components/session-selector.ts";
 
 type SessionsLoader = (onProgress?: SessionListProgress) => Promise<SessionInfo[]>;
+type SessionHydrator = (path: string) => Promise<SessionInfo | null>;
 
 /** Show TUI session selector and return selected session path or null if cancelled */
 export async function selectSession(
 	currentSessionsLoader: SessionsLoader,
 	allSessionsLoader: SessionsLoader,
+	hydrateSession?: SessionHydrator,
 ): Promise<string | null> {
 	return new Promise((resolve) => {
 		const ui = new TUI(new ProcessTerminal());
@@ -42,7 +44,7 @@ export async function selectSession(
 				process.exit(0);
 			},
 			() => ui.requestRender(),
-			{ showRenameHint: false, keybindings },
+			{ showRenameHint: false, keybindings, hydrateSession },
 		);
 
 		ui.addChild(selector);
