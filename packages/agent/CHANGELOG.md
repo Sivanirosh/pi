@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a contextual between-turn `prepareNextTurnWithContext` hook while preserving the existing `prepareNextTurn` hook.
+
 ## [0.79.9] - 2026-06-20
 
 ### Fixed

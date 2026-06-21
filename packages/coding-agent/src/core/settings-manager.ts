@@ -8,7 +8,7 @@ import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 
 export interface CompactionSettings {
-	enabled?: boolean; // default: true
+	enabled?: boolean; // default: false
 	reserveTokens?: number; // default: 16384
 	keepRecentTokens?: number; // default: 20000
 }
@@ -752,7 +752,7 @@ export class SettingsManager {
 	}
 
 	getCompactionEnabled(): boolean {
-		return this.settings.compaction?.enabled ?? true;
+		return this.settings.compaction?.enabled ?? false;
 	}
 
 	setCompactionEnabled(enabled: boolean): void {

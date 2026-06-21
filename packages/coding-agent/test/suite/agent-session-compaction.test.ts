@@ -231,7 +231,7 @@ describe("AgentSession compaction characterization", () => {
 	});
 
 	it("does not retry overflow recovery more than once", async () => {
-		const harness = await createHarness();
+		const harness = await createHarness({ settings: { compaction: { enabled: true } } });
 		harnesses.push(harness);
 		const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
 		const overflowMessage = createAssistant(harness, {
@@ -288,7 +288,7 @@ describe("AgentSession compaction characterization", () => {
 	});
 
 	it("ignores stale pre-compaction assistant usage on pre-prompt checks", async () => {
-		const harness = await createHarness();
+		const harness = await createHarness({ settings: { compaction: { enabled: true } } });
 		harnesses.push(harness);
 		const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
 		const staleTimestamp = Date.now() - 10_000;
@@ -326,7 +326,7 @@ describe("AgentSession compaction characterization", () => {
 	});
 
 	it("triggers threshold compaction for error messages using the last successful usage", async () => {
-		const harness = await createHarness();
+		const harness = await createHarness({ settings: { compaction: { enabled: true } } });
 		harnesses.push(harness);
 		const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
 		const successfulAssistant = createAssistant(harness, {
@@ -354,7 +354,7 @@ describe("AgentSession compaction characterization", () => {
 	});
 
 	it("does not trigger threshold compaction for error messages when no prior usage exists", async () => {
-		const harness = await createHarness();
+		const harness = await createHarness({ settings: { compaction: { enabled: true } } });
 		harnesses.push(harness);
 		const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
 		const errorAssistant = createAssistant(harness, {
@@ -375,7 +375,7 @@ describe("AgentSession compaction characterization", () => {
 	});
 
 	it("does not trigger threshold compaction when only kept pre-compaction usage exists", async () => {
-		const harness = await createHarness();
+		const harness = await createHarness({ settings: { compaction: { enabled: true } } });
 		harnesses.push(harness);
 		const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
 		const preCompactionTimestamp = Date.now() - 10_000;

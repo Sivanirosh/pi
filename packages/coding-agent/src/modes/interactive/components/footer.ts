@@ -47,7 +47,7 @@ export function formatCwdForFooter(cwd: string, home: string | undefined): strin
  * Computes token/context stats from session, gets git branch and extension statuses from provider.
  */
 export class FooterComponent implements Component {
-	private autoCompactEnabled = true;
+	private autoCompactEnabled = false;
 	private session: AgentSession;
 	private footerData: ReadonlyFooterDataProvider;
 

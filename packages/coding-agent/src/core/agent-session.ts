@@ -18,9 +18,11 @@ import { basename, dirname } from "node:path";
 import type {
 	Agent,
 	AgentEvent,
+	AgentLoopTurnUpdate,
 	AgentMessage,
 	AgentState,
 	AgentTool,
+	PrepareNextTurnContext,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, ImageContent, Message, Model, TextContent } from "@earendil-works/pi-ai";
@@ -351,6 +353,7 @@ export class AgentSession {
 		// (session persistence, extensions, auto-compaction, retry logic)
 		this._unsubscribeAgent = this.agent.subscribe(this._handleAgentEvent);
 		this._installAgentToolHooks();
+		this._installAgentTurnCheckpoint();
 
 		this._buildRuntime({
 			activeToolNames: this._initialActiveToolNames,
@@ -458,6 +461,52 @@ export class AgentSession {
 				details: hookResult.details,
 				isError: hookResult.isError ?? isError,
 			};
+		};
+	}
+
+	private _installAgentTurnCheckpoint(): void {
+		const prepareNextTurn = this.agent.prepareNextTurnWithContext?.bind(this.agent);
+		this.agent.prepareNextTurnWithContext = async (context, signal) => {
+			const update = await prepareNextTurn?.(context, signal);
+			const checkpointContext = update?.context ? { ...context, context: update.context } : context;
+			const compactionUpdate = await this._compactBeforeNextTurn(checkpointContext);
+			if (!update) return compactionUpdate;
+			if (!compactionUpdate) return update;
+			return { ...update, context: compactionUpdate.context ?? update.context };
+		};
+	}
+
+	private async _compactBeforeNextTurn(context: PrepareNextTurnContext): Promise<AgentLoopTurnUpdate | undefined> {
+		const message = context.message;
+		const settings = this.settingsManager.getCompactionSettings();
+		const contextWindow = this.model?.contextWindow ?? 0;
+		if (!settings.enabled || message.stopReason !== "toolUse" || contextWindow <= 0) {
+			return undefined;
+		}
+		if (!this.model || message.provider !== this.model.provider || message.model !== this.model.id) {
+			return undefined;
+		}
+
+		const contextTokens = Math.max(
+			calculateContextTokens(message.usage),
+			estimateMessagesTokens(context.context.messages),
+		);
+		if (!shouldCompact(contextTokens, contextWindow, settings)) {
+			return undefined;
+		}
+
+		const before = getLatestCompactionEntry(this.sessionManager.getBranch());
+		await this._runAutoCompaction("threshold", false);
+		const after = getLatestCompactionEntry(this.sessionManager.getBranch());
+		if (after === null || after.id === before?.id) {
+			throw new Error("Auto-compaction required before the next turn, but compaction did not complete.");
+		}
+
+		return {
+			context: {
+				...context.context,
+				messages: this.agent.state.messages.slice(),
+			},
 		};
 	}
 

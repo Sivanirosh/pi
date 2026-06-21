@@ -38,6 +38,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 
 		sessionManager = SessionManager.inMemory();
 		settingsManager = SettingsManager.create(tempDir, tempDir);
+		settingsManager.applyOverrides({ compaction: { enabled: true } });
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
 		const modelRegistry = ModelRegistry.create(authStorage, tempDir);

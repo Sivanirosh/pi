@@ -574,7 +574,7 @@ export default function (pi: ExtensionAPI) {
 }
 ```
 
-`message_end` runs before pi tracks the assistant message for auto-compaction, so the rewritten `errorMessage` is what pi checks. With this in place, pi will:
+`message_end` runs before pi tracks the assistant message for auto-compaction, so the rewritten `errorMessage` is what pi checks. When auto-compaction is enabled, pi will:
 
 1. Detect the overflow from `errorMessage`.
 2. Drop the failed assistant message from live context.
