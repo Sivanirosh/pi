@@ -2,10 +2,6 @@
 
 ## [Unreleased]
 
-### Changed
-
-- Changed automatic compaction to be opt-in by default and run threshold compaction at a between-turn checkpoint before the next provider request.
-
 ### Fixed
 
 - Fixed `pi update` to install the exact version returned by the Pi update check, make `--force` reinstall that checked version, fail instead of falling back to an unversioned reinstall when no version is available, and report both the old and updated versions.
