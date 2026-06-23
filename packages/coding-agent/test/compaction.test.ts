@@ -11,6 +11,7 @@ import {
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateContextTokens,
 	findCutPoint,
+	getEffectiveCompactionThreshold,
 	getLastAssistantUsage,
 	prepareCompaction,
 	shouldCompact,
@@ -275,6 +276,23 @@ describe("shouldCompact", () => {
 		};
 
 		expect(shouldCompact(95000, 100000, settings)).toBe(false);
+	});
+
+	it("should honor explicit threshold with safety floors", () => {
+		const settings: CompactionSettings = {
+			enabled: true,
+			reserveTokens: 10000,
+			keepRecentTokens: 20000,
+			thresholdTokens: 50000,
+		};
+
+		expect(getEffectiveCompactionThreshold(100000, settings)).toBe(50000);
+		expect(shouldCompact(50000, 100000, settings)).toBe(true);
+		expect(shouldCompact(49999, 100000, settings)).toBe(false);
+		expect(getEffectiveCompactionThreshold(100000, { ...settings, thresholdTokens: 1000 })).toBe(20000);
+		expect(
+			getEffectiveCompactionThreshold(100000, { ...settings, keepRecentTokens: 1000, thresholdTokens: 1000 }),
+		).toBe(8192);
 	});
 });
 

@@ -246,6 +246,20 @@ describe("AgentSession auto-compaction queue resume", () => {
 		expect(runAutoCompactionSpy).not.toHaveBeenCalled();
 	});
 
+	it("should fail closed before provider request when prospective context exceeds threshold", async () => {
+		settingsManager.applyOverrides({
+			compaction: {
+				enabled: true,
+				keepRecentTokens: 1000,
+				thresholdTokens: 1000,
+			},
+		});
+		session.agent.state.systemPrompt = "s".repeat(4000);
+
+		await expect(session.prompt("x".repeat(40000))).rejects.toThrow(/Stopping before the next provider request/);
+		expect(session.agent.state.messages).toEqual([]);
+	});
+
 	it("should trigger threshold compaction for error messages using last successful usage", async () => {
 		const model = session.model!;
 

@@ -154,6 +154,136 @@ describe("Agent", () => {
 		expect(agent.state.errorMessage).toBe("provider exploded");
 	});
 
+	it("runs prepareNextTurnWithContext after tool results while the run is still active", async () => {
+		const toolSchema = Type.Object({});
+		const noopTool: AgentTool<typeof toolSchema> = {
+			name: "noop",
+			label: "Noop",
+			description: "No-op tool for checkpoint tests",
+			parameters: toolSchema,
+			async execute(toolCallId) {
+				return {
+					content: [{ type: "text", text: `done ${toolCallId}` }],
+					details: {},
+				};
+			},
+		};
+
+		let streamCalls = 0;
+		const checks: Array<{
+			streamCalls: number;
+			isStreaming: boolean;
+			streamingMessage: AssistantMessage | undefined;
+			pendingToolCalls: number;
+			toolResults: number;
+			contextLastRole: string | undefined;
+		}> = [];
+
+		const agent = new Agent({
+			initialState: { tools: [noopTool] },
+			streamFn: () => {
+				streamCalls++;
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					if (streamCalls === 1) {
+						stream.push({
+							type: "done",
+							reason: "toolUse",
+							message: createAssistantToolUseMessage([
+								{ type: "toolCall", id: "call-1", name: "noop", arguments: {} },
+							]),
+						});
+					} else {
+						stream.push({ type: "done", reason: "stop", message: createAssistantMessage("finished") });
+					}
+				});
+				return stream;
+			},
+			prepareNextTurnWithContext: async (context) => {
+				if (context.message.content.some((part) => part.type === "toolCall")) {
+					checks.push({
+						streamCalls,
+						isStreaming: agent.state.isStreaming,
+						streamingMessage: agent.state.streamingMessage,
+						pendingToolCalls: agent.state.pendingToolCalls.size,
+						toolResults: context.toolResults.length,
+						contextLastRole: context.context.messages.at(-1)?.role,
+					});
+				}
+				return undefined;
+			},
+		});
+
+		await agent.prompt("start");
+
+		expect(streamCalls).toBe(2);
+		expect(checks).toEqual([
+			{
+				streamCalls: 1,
+				isStreaming: true,
+				streamingMessage: undefined,
+				pendingToolCalls: 0,
+				toolResults: 1,
+				contextLastRole: "toolResult",
+			},
+		]);
+	});
+
+	it("blocks the next provider request when prepareNextTurnWithContext throws", async () => {
+		const toolSchema = Type.Object({});
+		const noopTool: AgentTool<typeof toolSchema> = {
+			name: "noop",
+			label: "Noop",
+			description: "No-op tool for checkpoint tests",
+			parameters: toolSchema,
+			async execute(toolCallId) {
+				return {
+					content: [{ type: "text", text: `done ${toolCallId}` }],
+					details: {},
+				};
+			},
+		};
+		const sentinel = "checkpoint failed closed";
+		let streamCalls = 0;
+
+		const agent = new Agent({
+			initialState: { tools: [noopTool] },
+			streamFn: () => {
+				streamCalls++;
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					if (streamCalls === 1) {
+						stream.push({
+							type: "done",
+							reason: "toolUse",
+							message: createAssistantToolUseMessage([
+								{ type: "toolCall", id: "call-1", name: "noop", arguments: {} },
+							]),
+						});
+					} else {
+						stream.push({ type: "done", reason: "stop", message: createAssistantMessage("unexpected") });
+					}
+				});
+				return stream;
+			},
+			prepareNextTurnWithContext: async (context) => {
+				if (context.message.content.some((part) => part.type === "toolCall")) {
+					throw new Error(sentinel);
+				}
+				return undefined;
+			},
+		});
+
+		await agent.prompt("start");
+
+		expect(streamCalls).toBe(1);
+		const lastMessage = agent.state.messages.at(-1);
+		expect(lastMessage?.role).toBe("assistant");
+		if (lastMessage?.role !== "assistant") throw new Error("Expected assistant message");
+		expect(lastMessage.stopReason).toBe("error");
+		expect(lastMessage.errorMessage).toContain(sentinel);
+	});
+
 	it("should await async subscribers before prompt resolves", async () => {
 		const barrier = createDeferred();
 		const agent = new Agent({

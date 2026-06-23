@@ -11,6 +11,7 @@ export interface CompactionSettings {
 	enabled?: boolean; // default: false
 	reserveTokens?: number; // default: 16384
 	keepRecentTokens?: number; // default: 20000
+	thresholdTokens?: number; // optional explicit auto-compaction trigger
 }
 
 export interface BranchSummarySettings {
@@ -772,11 +773,22 @@ export class SettingsManager {
 		return this.settings.compaction?.keepRecentTokens ?? 20000;
 	}
 
-	getCompactionSettings(): { enabled: boolean; reserveTokens: number; keepRecentTokens: number } {
+	getCompactionThresholdTokens(): number | undefined {
+		const value = this.settings.compaction?.thresholdTokens;
+		return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+	}
+
+	getCompactionSettings(): {
+		enabled: boolean;
+		reserveTokens: number;
+		keepRecentTokens: number;
+		thresholdTokens: number | undefined;
+	} {
 		return {
 			enabled: this.getCompactionEnabled(),
 			reserveTokens: this.getCompactionReserveTokens(),
 			keepRecentTokens: this.getCompactionKeepRecentTokens(),
+			thresholdTokens: this.getCompactionThresholdTokens(),
 		};
 	}
 

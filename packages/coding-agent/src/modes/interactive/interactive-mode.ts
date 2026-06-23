@@ -2982,6 +2982,14 @@ export class InteractiveMode {
 							new Date().toISOString(),
 						),
 					);
+					const beforeTokens = event.result.tokensBefore.toLocaleString();
+					const afterTokens = event.result.estimatedTokensAfter?.toLocaleString();
+					const label = event.reason === "manual" ? "Context compacted" : "Context auto-compacted";
+					const tokenSummary =
+						afterTokens === undefined
+							? `${beforeTokens} tokens before compaction`
+							: `${beforeTokens} → ~${afterTokens} tokens`;
+					this.showStatus(`🗜️ ${label} (${tokenSummary})`);
 					this.footer.invalidate();
 				} else if (event.errorMessage) {
 					if (event.reason === "manual") {

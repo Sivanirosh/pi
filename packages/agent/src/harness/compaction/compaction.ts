@@ -105,6 +105,8 @@ export interface CompactionSettings {
 	reserveTokens: number;
 	/** Approximate recent-context tokens to keep after compaction. */
 	keepRecentTokens: number;
+	/** Optional explicit trigger threshold. */
+	thresholdTokens?: number;
 }
 
 /** Default compaction settings used by the harness. */
@@ -165,7 +167,7 @@ function getLastAssistantUsageInfo(messages: AgentMessage[]): { usage: Usage; in
 	return undefined;
 }
 
-/** Estimate context tokens for messages using provider usage when available. */
+/** Estimate context tokens for messages using non-zero provider usage when available. */
 export function estimateContextTokens(messages: AgentMessage[]): ContextUsageEstimate {
 	const usageInfo = getLastAssistantUsageInfo(messages);
 
@@ -196,10 +198,25 @@ export function estimateContextTokens(messages: AgentMessage[]): ContextUsageEst
 	};
 }
 
+/** Resolve the effective compaction threshold from context window, explicit threshold, and safety floors. */
+const MIN_SAFE_ABSOLUTE = 8192;
+
+export function getEffectiveCompactionThreshold(contextWindow: number, settings: CompactionSettings): number {
+	const windowThreshold = contextWindow - settings.reserveTokens;
+	const configuredThreshold = settings.thresholdTokens;
+	const keepRecent = settings.keepRecentTokens || 20000;
+	const rawThreshold =
+		typeof configuredThreshold === "number" && Number.isFinite(configuredThreshold) && configuredThreshold > 0
+			? Math.min(windowThreshold, configuredThreshold)
+			: windowThreshold;
+
+	return Math.max(rawThreshold, keepRecent, MIN_SAFE_ABSOLUTE);
+}
+
 /** Return whether context usage exceeds the configured compaction threshold. */
 export function shouldCompact(contextTokens: number, contextWindow: number, settings: CompactionSettings): boolean {
 	if (!settings.enabled) return false;
-	return contextTokens > contextWindow - settings.reserveTokens;
+	return contextTokens >= getEffectiveCompactionThreshold(contextWindow, settings);
 }
 
 const ESTIMATED_IMAGE_CHARS = 4800;

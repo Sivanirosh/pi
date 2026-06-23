@@ -49,6 +49,7 @@ import {
 	estimateContextTokens,
 	estimateTokens,
 	generateBranchSummary,
+	getEffectiveCompactionThreshold,
 	prepareCompaction,
 	shouldCompact,
 } from "./compaction/index.ts";
@@ -464,48 +465,169 @@ export class AgentSession {
 		};
 	}
 
+	/**
+	 * Install a safe between-turn checkpoint for core auto-compaction.
+	 *
+	 * This runs after an assistant message and all of its tool results are persisted,
+	 * but before the next provider request is allowed to start. Unlike manual
+	 * ctx.compact(), it does not abort the active agent run.
+	 */
 	private _installAgentTurnCheckpoint(): void {
-		const prepareNextTurn = this.agent.prepareNextTurnWithContext?.bind(this.agent);
-		this.agent.prepareNextTurnWithContext = async (context, signal) => {
-			const update = await prepareNextTurn?.(context, signal);
-			const checkpointContext = update?.context ? { ...context, context: update.context } : context;
-			const compactionUpdate = await this._compactBeforeNextTurn(checkpointContext);
-			if (!update) return compactionUpdate;
-			if (!compactionUpdate) return update;
-			return { ...update, context: compactionUpdate.context ?? update.context };
+		const previousPrepareNextTurn = this.agent.prepareNextTurnWithContext?.bind(this.agent);
+		this.agent.prepareNextTurnWithContext = async (turnContext, signal) => {
+			const previousUpdate = await previousPrepareNextTurn?.(turnContext, signal);
+			const checkpointContext = previousUpdate?.context
+				? { ...turnContext, context: previousUpdate.context }
+				: turnContext;
+			const compactionUpdate = await this._prepareNextTurnCompactionCheckpoint(
+				checkpointContext,
+				signal,
+				previousUpdate?.model,
+			);
+			if (!previousUpdate) return compactionUpdate;
+			if (!compactionUpdate) return previousUpdate;
+			return {
+				...previousUpdate,
+				...compactionUpdate,
+				context: compactionUpdate.context ?? previousUpdate.context,
+				model: compactionUpdate.model ?? previousUpdate.model,
+				thinkingLevel: compactionUpdate.thinkingLevel ?? previousUpdate.thinkingLevel,
+			};
 		};
 	}
 
-	private async _compactBeforeNextTurn(context: PrepareNextTurnContext): Promise<AgentLoopTurnUpdate | undefined> {
-		const message = context.message;
+	private _getEffectiveCompactionThreshold(
+		contextWindow: number,
+		settings: ReturnType<SettingsManager["getCompactionSettings"]>,
+	): number {
+		return getEffectiveCompactionThreshold(contextWindow, settings);
+	}
+
+	private _getSystemPromptTokenEstimate(): number {
+		return Math.ceil((this.agent.state.systemPrompt?.length ?? 0) / 4);
+	}
+
+	private _getContextTokensForThreshold(messages: AgentMessage[] = this.agent.state.messages): number {
+		const estimate = estimateContextTokens(messages);
+		const heuristicTokens = estimateMessagesTokens(messages) + this._getSystemPromptTokenEstimate();
+		if (estimate.lastUsageIndex === null) {
+			return heuristicTokens;
+		}
+
+		const latestCompaction = getLatestCompactionEntry(this.sessionManager.getBranch());
+		if (latestCompaction !== null) {
+			const usageMessage = messages[estimate.lastUsageIndex];
+			const compactionTimestamp = new Date(latestCompaction.timestamp).getTime();
+			// A kept assistant message can carry pre-compaction usage for a much
+			// larger context. Fall back to a full transcript estimate instead of
+			// looping on stale usage immediately after compaction.
+			if (usageMessage?.role === "assistant" && usageMessage.timestamp <= compactionTimestamp) {
+				return heuristicTokens;
+			}
+		}
+
+		return estimate.tokens;
+	}
+
+	private _getCheckpointContextTokens(turnContext: PrepareNextTurnContext): number {
+		return this._getContextTokensForThreshold(turnContext.context.messages);
+	}
+
+	private _getAutoCompactionCheckpointBlocker(): string | undefined {
+		const state = this.agent.state;
+		if (!state.isStreaming) {
+			return "agent run is not active";
+		}
+		if (state.streamingMessage !== undefined) {
+			return "assistant response is still streaming";
+		}
+		if (state.pendingToolCalls.size > 0) {
+			return `${state.pendingToolCalls.size} tool call(s) still executing`;
+		}
+		if (this.isCompacting) {
+			return "another compaction or branch summarization is already running";
+		}
+		return undefined;
+	}
+
+	private _formatAutoCompactionRequiredError(contextTokens: number, threshold: number, detail?: string): string {
+		const base = `Auto-compaction required at ${contextTokens.toLocaleString()} tokens (threshold ${threshold.toLocaleString()}) but Pi could not compact safely.`;
+		return detail
+			? `${base} ${detail} Stopping before the next provider request.`
+			: `${base} Stopping before the next provider request.`;
+	}
+
+	private _assertCompactionThresholdAllowsProviderRequest(messages: AgentMessage[] = this.agent.state.messages): void {
 		const settings = this.settingsManager.getCompactionSettings();
+		if (!settings.enabled) return;
 		const contextWindow = this.model?.contextWindow ?? 0;
-		if (!settings.enabled || message.stopReason !== "toolUse" || contextWindow <= 0) {
-			return undefined;
+		if (contextWindow <= 0) return;
+		const threshold = this._getEffectiveCompactionThreshold(contextWindow, settings);
+		const contextTokens = this._getContextTokensForThreshold(messages);
+		if (Number.isFinite(contextTokens) && contextTokens >= threshold) {
+			throw new Error(this._formatAutoCompactionRequiredError(contextTokens, threshold));
 		}
-		if (!this.model || message.provider !== this.model.provider || message.model !== this.model.id) {
-			return undefined;
+	}
+
+	private async _prepareNextTurnCompactionCheckpoint(
+		turnContext: PrepareNextTurnContext,
+		signal?: AbortSignal,
+		nextModel?: Model<any>,
+	): Promise<AgentLoopTurnUpdate | undefined> {
+		const settings = this.settingsManager.getCompactionSettings();
+		if (!settings.enabled) return undefined;
+		const message = turnContext.message;
+		if (message.stopReason === "aborted") return undefined;
+		const model = nextModel ?? this.model;
+		const contextWindow = model?.contextWindow ?? 0;
+		if (contextWindow <= 0) return undefined;
+		const threshold = this._getEffectiveCompactionThreshold(contextWindow, settings);
+		const latestBefore = getLatestCompactionEntry(this.sessionManager.getBranch());
+		const contextTokens = this._getCheckpointContextTokens(turnContext);
+		if (!Number.isFinite(contextTokens) || contextTokens < threshold) return undefined;
+		const checkpointBlocker = this._getAutoCompactionCheckpointBlocker();
+		if (checkpointBlocker) {
+			throw new Error(
+				this._formatAutoCompactionRequiredError(
+					contextTokens,
+					threshold,
+					`Between-turn checkpoint is not safe (${checkpointBlocker}).`,
+				),
+			);
 		}
 
-		const contextTokens = Math.max(
-			calculateContextTokens(message.usage),
-			estimateMessagesTokens(context.context.messages),
-		);
-		if (!shouldCompact(contextTokens, contextWindow, settings)) {
-			return undefined;
+		const abortCompaction = () => this._autoCompactionAbortController?.abort();
+		signal?.addEventListener("abort", abortCompaction, { once: true });
+		try {
+			await this._runAutoCompaction("threshold", false);
+		} finally {
+			signal?.removeEventListener("abort", abortCompaction);
 		}
 
-		const before = getLatestCompactionEntry(this.sessionManager.getBranch());
-		await this._runAutoCompaction("threshold", false);
-		const after = getLatestCompactionEntry(this.sessionManager.getBranch());
-		if (after === null || after.id === before?.id) {
-			throw new Error("Auto-compaction required before the next turn, but compaction did not complete.");
+		const latestAfter = getLatestCompactionEntry(this.sessionManager.getBranch());
+		const compacted = latestAfter !== null && latestAfter.id !== latestBefore?.id;
+		if (!compacted) {
+			throw new Error(
+				this._formatAutoCompactionRequiredError(
+					contextTokens,
+					threshold,
+					"Compaction did not produce a new compaction entry.",
+				),
+			);
+		}
+
+		const sessionContext = this.sessionManager.buildSessionContext();
+		const estimatedTokensAfter = this._getContextTokensForThreshold(sessionContext.messages);
+		if (estimatedTokensAfter >= threshold) {
+			throw new Error(
+				`Auto-compaction completed but context is still approximately ${estimatedTokensAfter.toLocaleString()} tokens (threshold ${threshold.toLocaleString()}). Stopping before the next provider request.`,
+			);
 		}
 
 		return {
 			context: {
-				...context.context,
-				messages: this.agent.state.messages.slice(),
+				...turnContext.context,
+				messages: sessionContext.messages,
 			},
 		};
 	}
@@ -1150,11 +1272,13 @@ export class AgentSession {
 				timestamp: Date.now(),
 			});
 
-			// Inject any pending "nextTurn" messages as context alongside the user message
-			for (const msg of this._pendingNextTurnMessages) {
+			// Inject any pending "nextTurn" messages as context alongside the user message.
+			// Do not clear them until preflight succeeds; fail-closed threshold checks
+			// must not silently drop queued context.
+			const pendingNextTurnMessages = this._pendingNextTurnMessages;
+			for (const msg of pendingNextTurnMessages) {
 				messages.push(msg);
 			}
-			this._pendingNextTurnMessages = [];
 
 			// Emit before_agent_start extension event
 			const result = await this._extensionRunner.emitBeforeAgentStart(
@@ -1183,6 +1307,11 @@ export class AgentSession {
 				// Ensure we're using the base prompt (in case previous turn had modifications)
 				this.agent.state.systemPrompt = this._baseSystemPrompt;
 			}
+
+			// Fail closed on the exact prospective provider request, including the
+			// new user/custom messages and any per-turn system prompt changes.
+			this._assertCompactionThresholdAllowsProviderRequest([...this.agent.state.messages, ...messages]);
+			this._pendingNextTurnMessages = [];
 		} catch (error) {
 			preflightResult?.(false);
 			throw error;
@@ -1878,21 +2007,19 @@ export class AgentSession {
 		const sameModel =
 			this.model && assistantMessage.provider === this.model.provider && assistantMessage.model === this.model.id;
 
-		// Skip compaction checks if this assistant message is older than the latest
-		// compaction boundary. This prevents a stale pre-compaction usage/error
-		// from retriggering compaction on the first prompt after compaction.
+		// Mark assistant messages older than the latest compaction boundary so stale
+		// overflow decisions are ignored. Threshold decisions below measure the current
+		// provider request context and independently filter stale pre-compaction usage.
 		const compactionEntry = getLatestCompactionEntry(this.sessionManager.getBranch());
 		const assistantIsFromBeforeCompaction =
 			compactionEntry !== null && assistantMessage.timestamp <= new Date(compactionEntry.timestamp).getTime();
-		if (assistantIsFromBeforeCompaction) {
-			return false;
-		}
 
 		// Case 1: Overflow - LLM returned context overflow error, or reported usage exceeded
 		// the configured window. A successful response over the configured window should compact
 		// but must not retry: the assistant answer already completed and agent.continue() cannot
-		// continue from an assistant message.
-		if (sameModel && isContextOverflow(assistantMessage, contextWindow)) {
+		// continue from an assistant message. Skip stale overflow decisions from messages that
+		// predate the latest compaction; threshold checks below measure the current context instead.
+		if (!assistantIsFromBeforeCompaction && sameModel && isContextOverflow(assistantMessage, contextWindow)) {
 			const willRetry = assistantMessage.stopReason !== "stop";
 
 			if (!willRetry) {
@@ -1922,31 +2049,12 @@ export class AgentSession {
 			return await this._runAutoCompaction("overflow", willRetry);
 		}
 
-		// Case 2: Threshold - context is getting large
-		// For error messages or all-zero usage messages, estimate from the last valid response.
-		// This ensures sessions that hit persistent API errors (e.g. 529) or malformed zero-usage
-		// responses can still compact and do not reset context accounting.
-		let contextTokens: number;
-		const directContextTokens = assistantMessage.usage ? calculateContextTokens(assistantMessage.usage) : 0;
-		if (assistantMessage.stopReason === "error" || directContextTokens === 0) {
-			const messages = this.agent.state.messages;
-			const estimate = estimateContextTokens(messages);
-			if (estimate.lastUsageIndex === null) return false; // No usage data at all
-			// Verify the usage source is post-compaction. Kept pre-compaction messages
-			// have stale usage reflecting the old (larger) context and would falsely
-			// trigger compaction right after one just finished.
-			const usageMsg = messages[estimate.lastUsageIndex];
-			if (
-				compactionEntry &&
-				usageMsg.role === "assistant" &&
-				(usageMsg as AssistantMessage).timestamp <= new Date(compactionEntry.timestamp).getTime()
-			) {
-				return false;
-			}
-			contextTokens = estimate.tokens;
-		} else {
-			contextTokens = directContextTokens;
-		}
+		// Case 2: Threshold - context is getting large.
+		// Measure the provider request context, not just the most recent assistant usage:
+		// the next request also includes tool results and queued turn context, and some
+		// providers report zero-filled usage objects. Stale pre-compaction usage is
+		// filtered by _getContextTokensForThreshold().
+		const contextTokens = this._getContextTokensForThreshold(this.agent.state.messages);
 		if (shouldCompact(contextTokens, contextWindow, settings)) {
 			return await this._runAutoCompaction("threshold", false);
 		}

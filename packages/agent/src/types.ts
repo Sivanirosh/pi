@@ -214,6 +214,8 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 
 	/**
 	 * Called after `turn_end` and before the loop decides whether another provider request should start.
+	 * At this checkpoint the assistant stream has ended and all tool executions for the turn are complete;
+	 * the enclosing agent run is still active so the next provider request can be blocked or reshaped safely.
 	 * Return replacement context/model/thinking state to affect the next turn in this run.
 	 * Return undefined to keep using the current context/config.
 	 */

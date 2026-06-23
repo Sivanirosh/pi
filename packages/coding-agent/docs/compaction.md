@@ -27,13 +27,19 @@ Both use the same structured summary format and track file operations cumulative
 
 ### When It Triggers
 
-When enabled, auto-compaction triggers when:
+When enabled, auto-compaction triggers at a safe between-turn checkpoint when:
 
-```
-contextTokens > contextWindow - reserveTokens
+```txt
+contextTokens >= effectiveThreshold
+
+effectiveThreshold = max(
+  thresholdTokens ?? (contextWindow - reserveTokens),
+  keepRecentTokens,
+  8192
+)
 ```
 
-Auto-compaction is off by default. Enable it with `"compaction": { "enabled": true }` if you want pi to keep the context window in a healthy range automatically. During tool loops, pi checks at the turn boundary before the next provider request. By default, `reserveTokens` is 16384 tokens (configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`). This leaves room for the LLM's response.
+Auto-compaction is off by default. Enable it with `"compaction": { "enabled": true }` if you want pi to keep the context window in a healthy range automatically. During tool loops, pi checks after an assistant turn and all tool results have completed, before the next provider request starts. By default, `reserveTokens` is 16384 tokens (configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`). This leaves room for the LLM's response. `thresholdTokens` can lower the trigger point for testing or conservative operation, but the effective threshold never drops below `keepRecentTokens` or 8192 tokens. If the threshold is exceeded but pi cannot compact safely, the next provider request is blocked instead of sending an oversized context.
 
 You can also trigger manually with `/compact [instructions]`, where optional instructions focus the summary.
 
@@ -382,6 +388,7 @@ Configure compaction in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settin
 {
   "compaction": {
     "enabled": true,
+    "thresholdTokens": 50000,
     "reserveTokens": 16384,
     "keepRecentTokens": 20000
   }
@@ -391,6 +398,7 @@ Configure compaction in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settin
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `enabled` | `false` | Enable auto-compaction |
+| `thresholdTokens` | unset | Optional explicit auto-compaction trigger. Effective value is capped by `contextWindow - reserveTokens` and floored by `keepRecentTokens` and 8192. |
 | `reserveTokens` | `16384` | Tokens to reserve for LLM response |
 | `keepRecentTokens` | `20000` | Recent tokens to keep (not summarized) |
 
