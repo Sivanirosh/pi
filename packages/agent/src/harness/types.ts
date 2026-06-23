@@ -749,6 +749,7 @@ export interface CompactionSettings {
 	enabled: boolean;
 	reserveTokens: number;
 	keepRecentTokens: number;
+	thresholdTokens?: number;
 }
 
 export interface CompactionPreparation {

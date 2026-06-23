@@ -1,7 +1,13 @@
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, getModel } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
-import { Agent, type AgentEvent, type AgentTool, type AgentToolUpdateCallback } from "../src/index.ts";
+import {
+	Agent,
+	type AgentEvent,
+	type AgentMessage,
+	type AgentTool,
+	type AgentToolUpdateCallback,
+} from "../src/index.ts";
 
 // Mock stream that mimics AssistantMessageEventStream
 class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
@@ -173,7 +179,7 @@ describe("Agent", () => {
 		const checks: Array<{
 			streamCalls: number;
 			isStreaming: boolean;
-			streamingMessage: AssistantMessage | undefined;
+			streamingMessage: AgentMessage | undefined;
 			pendingToolCalls: number;
 			toolResults: number;
 			contextLastRole: string | undefined;
