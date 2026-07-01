@@ -31,6 +31,7 @@ import {
 	cleanupSessionResources,
 	getSupportedThinkingLevels,
 	isContextOverflow,
+	isRetryableAssistantError,
 	modelsAreEqual,
 	resetApiProviders,
 	streamSimple,
@@ -333,6 +334,7 @@ export class AgentSession {
 	// Base system prompt (without extension appends) - used to apply fresh appends each turn
 	private _baseSystemPrompt = "";
 	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
+	private _systemPromptOverride?: string;
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -354,7 +356,7 @@ export class AgentSession {
 		// (session persistence, extensions, auto-compaction, retry logic)
 		this._unsubscribeAgent = this.agent.subscribe(this._handleAgentEvent);
 		this._installAgentToolHooks();
-		this._installAgentTurnCheckpoint();
+		this._installAgentNextTurnHandlers();
 
 		this._buildRuntime({
 			activeToolNames: this._initialActiveToolNames,
@@ -466,32 +468,41 @@ export class AgentSession {
 	}
 
 	/**
-	 * Install a safe between-turn checkpoint for core auto-compaction.
+	 * Install next-turn refresh and safe auto-compaction checkpoint handling.
 	 *
-	 * This runs after an assistant message and all of its tool results are persisted,
-	 * but before the next provider request is allowed to start. Unlike manual
-	 * ctx.compact(), it does not abort the active agent run.
+	 * The refresh keeps dynamic system prompt, active tools, model, and thinking
+	 * changes visible to the next provider request. The checkpoint runs after an
+	 * assistant message and all tool results are persisted, but before the next
+	 * provider request starts.
 	 */
-	private _installAgentTurnCheckpoint(): void {
-		const previousPrepareNextTurn = this.agent.prepareNextTurnWithContext?.bind(this.agent);
+	private _installAgentNextTurnHandlers(): void {
+		const previousPrepareNextTurnWithContext = this.agent.prepareNextTurnWithContext?.bind(this.agent);
 		this.agent.prepareNextTurnWithContext = async (turnContext, signal) => {
-			const previousUpdate = await previousPrepareNextTurn?.(turnContext, signal);
-			const checkpointContext = previousUpdate?.context
-				? { ...turnContext, context: previousUpdate.context }
-				: turnContext;
-			const compactionUpdate = await this._prepareNextTurnCompactionCheckpoint(
-				checkpointContext,
-				signal,
-				previousUpdate?.model,
-			);
-			if (!previousUpdate) return compactionUpdate;
-			if (!compactionUpdate) return previousUpdate;
-			return {
+			const previousUpdate = await previousPrepareNextTurnWithContext?.(turnContext, signal);
+			const previousContext = previousUpdate?.context ?? turnContext.context;
+			const refreshedUpdate: AgentLoopTurnUpdate = {
 				...previousUpdate,
+				context: {
+					...previousContext,
+					systemPrompt: this._systemPromptOverride ?? this._baseSystemPrompt,
+					tools: this.agent.state.tools.slice(),
+				},
+				model: this.agent.state.model,
+				thinkingLevel: this.agent.state.thinkingLevel,
+			};
+
+			const compactionUpdate = await this._prepareNextTurnCompactionCheckpoint(
+				{ ...turnContext, context: refreshedUpdate.context },
+				signal,
+				refreshedUpdate.model,
+			);
+			if (!compactionUpdate) return refreshedUpdate;
+			return {
+				...refreshedUpdate,
 				...compactionUpdate,
-				context: compactionUpdate.context ?? previousUpdate.context,
-				model: compactionUpdate.model ?? previousUpdate.model,
-				thinkingLevel: compactionUpdate.thinkingLevel ?? previousUpdate.thinkingLevel,
+				context: compactionUpdate.context ?? refreshedUpdate.context,
+				model: compactionUpdate.model ?? refreshedUpdate.model,
+				thinkingLevel: compactionUpdate.thinkingLevel ?? refreshedUpdate.thinkingLevel,
 			};
 		};
 	}
@@ -994,7 +1005,7 @@ export class AgentSession {
 
 		// Rebuild base system prompt with new tool set
 		this._baseSystemPrompt = this._rebuildSystemPrompt(validToolNames);
-		this.agent.state.systemPrompt = this._baseSystemPrompt;
+		this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
 	}
 
 	/** Whether compaction or branch summarization is currently running */
@@ -1122,6 +1133,7 @@ export class AgentSession {
 				await this.agent.continue();
 			}
 		} finally {
+			this._systemPromptOverride = undefined;
 			this._flushPendingBashMessages();
 		}
 	}
@@ -1245,17 +1257,11 @@ export class AgentSession {
 				throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
 			}
 
-			// Check if we need to compact before sending (catches aborted responses)
+			// Check if we need to compact before sending (catches aborted responses).
+			// The user's new prompt is sent below, so do not call agent.continue() here.
 			const lastAssistant = this._findLastAssistantMessage();
-			if (lastAssistant && (await this._checkCompaction(lastAssistant, false))) {
-				try {
-					await this.agent.continue();
-					while (await this._handlePostAgentRun()) {
-						await this.agent.continue();
-					}
-				} finally {
-					this._flushPendingBashMessages();
-				}
+			if (lastAssistant) {
+				await this._checkCompaction(lastAssistant, false);
 			}
 
 			// Build messages array (custom message if any, then user message)
@@ -1301,10 +1307,12 @@ export class AgentSession {
 				}
 			}
 			// Apply extension-modified system prompt, or reset to base
-			if (result?.systemPrompt) {
+			if (result?.systemPrompt !== undefined) {
+				this._systemPromptOverride = result.systemPrompt;
 				this.agent.state.systemPrompt = result.systemPrompt;
 			} else {
 				// Ensure we're using the base prompt (in case previous turn had modifications)
+				this._systemPromptOverride = undefined;
 				this.agent.state.systemPrompt = this._baseSystemPrompt;
 			}
 
@@ -2639,29 +2647,14 @@ export class AgentSession {
 	// Auto-Retry
 	// =========================================================================
 
-	private _isNonRetryableProviderLimitError(errorMessage: string): boolean {
-		return /GoUsageLimitError|FreeUsageLimitError|Monthly usage limit reached|available balance|insufficient_quota|out of budget|quota exceeded|billing/i.test(
-			errorMessage,
-		);
-	}
-
 	/**
 	 * Check if an error is retryable (overloaded, rate limit, server errors).
 	 * Context overflow errors are NOT retryable (handled by compaction instead).
 	 */
 	private _isRetryableError(message: AssistantMessage): boolean {
-		if (message.stopReason !== "error" || !message.errorMessage) return false;
-
-		// Context overflow is handled by compaction, not retry
-		const contextWindow = this.model?.contextWindow ?? 0;
-		if (isContextOverflow(message, contextWindow)) return false;
-
-		const err = message.errorMessage;
-		if (this._isNonRetryableProviderLimitError(err)) return false;
-		// Match: overloaded_error, provider returned error, rate limit, 429, 500, 502, 503, 504, service unavailable, network/connection errors (including connection lost), WebSocket transport closes/errors, fetch failed, premature stream endings, HTTP/2 closed before response, terminated, retry delay exceeded
-		return /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|stream ended before message_stop|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i.test(
-			err,
-		);
+		// Context overflow is handled by compaction, not retry.
+		if (isContextOverflow(message, this.model?.contextWindow ?? 0)) return false;
+		return isRetryableAssistantError(message);
 	}
 
 	/**
@@ -2860,7 +2853,9 @@ export class AgentSession {
 	 */
 	setSessionName(name: string): void {
 		this.sessionManager.appendSessionInfo(name);
-		this._emit({ type: "session_info_changed", name: this.sessionManager.getSessionName() });
+		const event = { type: "session_info_changed", name: this.sessionManager.getSessionName() } as const;
+		this._emit(event);
+		void this._extensionRunner.emit(event);
 	}
 
 	// =========================================================================
