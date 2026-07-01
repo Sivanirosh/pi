@@ -2995,7 +2995,7 @@ export class InteractiveMode {
 						afterTokens === undefined
 							? `${beforeTokens} tokens before compaction`
 							: `${beforeTokens} → ~${afterTokens} tokens`;
-					this.showStatus(`🗜️ ${label} (${tokenSummary})`);
+					this.showStatus(`${label} (${tokenSummary})`);
 					this.footer.invalidate();
 				} else if (event.errorMessage) {
 					if (event.reason === "manual") {
