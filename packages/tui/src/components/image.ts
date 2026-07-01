@@ -8,6 +8,7 @@ import {
 	renderImage,
 } from "../terminal-image.ts";
 import type { Component } from "../tui.ts";
+import { truncateToWidth } from "../utils.ts";
 
 export interface ImageTheme {
 	fallbackColor: (str: string) => string;
@@ -28,6 +29,11 @@ export class Image implements Component {
 	private theme: ImageTheme;
 	private options: ImageOptions;
 	private imageId?: number;
+
+	private renderFallback(width: number): string {
+		const fallback = imageFallback(this.mimeType, this.dimensions, this.options.filename);
+		return this.theme.fallbackColor(truncateToWidth(fallback, width));
+	}
 
 	private cachedLines?: string[];
 	private cachedWidth?: number;
@@ -110,12 +116,10 @@ export class Image implements Component {
 					lines.push(moveUp + result.sequence);
 				}
 			} else {
-				const fallback = imageFallback(this.mimeType, this.dimensions, this.options.filename);
-				lines = [this.theme.fallbackColor(fallback)];
+				lines = [this.renderFallback(width)];
 			}
 		} else {
-			const fallback = imageFallback(this.mimeType, this.dimensions, this.options.filename);
-			lines = [this.theme.fallbackColor(fallback)];
+			lines = [this.renderFallback(width)];
 		}
 
 		this.cachedLines = lines;

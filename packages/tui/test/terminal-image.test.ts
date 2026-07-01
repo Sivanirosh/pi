@@ -5,6 +5,7 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import { Image } from "../src/components/image.ts";
+import { visibleWidth } from "../src/utils.ts";
 import {
 	deleteAllKittyImages,
 	deleteKittyImage,
@@ -461,6 +462,31 @@ describe("Kitty image cursor movement", () => {
 		} finally {
 			resetCapabilitiesCache();
 			setCellDimensions({ widthPx: 9, heightPx: 18 });
+		}
+	});
+});
+
+describe("Image fallback", () => {
+	it("truncates long fallback filenames to the component width", () => {
+		setCapabilities({ images: null, trueColor: true, hyperlinks: false });
+		try {
+			const image = new Image(
+				"AAAA",
+				"image/png",
+				{ fallbackColor: (value) => `\x1b[2m${value}\x1b[22m` },
+				{
+					filename:
+						"/home/sivanirosh/git_repos/khazad-doom/.pi/generated-images/openai-image-2026-06-26T09-58-33-340Z-ig_00c9fe3d64585143016a3e4cfa6ca8819a9e49ead426af1e66.png",
+				},
+				{ widthPx: 1536, heightPx: 1024 },
+			);
+
+			const lines = image.render(40);
+			assert.strictEqual(lines.length, 1);
+			assert.ok(visibleWidth(lines[0]) <= 40, `fallback width ${visibleWidth(lines[0])} exceeds 40`);
+			assert.ok(lines[0].includes("..."));
+		} finally {
+			resetCapabilitiesCache();
 		}
 	});
 });
