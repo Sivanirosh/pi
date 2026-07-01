@@ -480,29 +480,32 @@ export class AgentSession {
 		this.agent.prepareNextTurnWithContext = async (turnContext, signal) => {
 			const previousUpdate = await previousPrepareNextTurnWithContext?.(turnContext, signal);
 			const previousContext = previousUpdate?.context ?? turnContext.context;
+			const refreshedContext = {
+				...previousContext,
+				systemPrompt: this._systemPromptOverride ?? this._baseSystemPrompt,
+				tools: this.agent.state.tools.slice(),
+			};
+			const refreshedModel = this.agent.state.model;
+			const refreshedThinkingLevel = this.agent.state.thinkingLevel;
 			const refreshedUpdate: AgentLoopTurnUpdate = {
 				...previousUpdate,
-				context: {
-					...previousContext,
-					systemPrompt: this._systemPromptOverride ?? this._baseSystemPrompt,
-					tools: this.agent.state.tools.slice(),
-				},
-				model: this.agent.state.model,
-				thinkingLevel: this.agent.state.thinkingLevel,
+				context: refreshedContext,
+				model: refreshedModel,
+				thinkingLevel: refreshedThinkingLevel,
 			};
 
 			const compactionUpdate = await this._prepareNextTurnCompactionCheckpoint(
-				{ ...turnContext, context: refreshedUpdate.context },
+				{ ...turnContext, context: refreshedContext },
 				signal,
-				refreshedUpdate.model,
+				refreshedModel,
 			);
 			if (!compactionUpdate) return refreshedUpdate;
 			return {
 				...refreshedUpdate,
 				...compactionUpdate,
-				context: compactionUpdate.context ?? refreshedUpdate.context,
-				model: compactionUpdate.model ?? refreshedUpdate.model,
-				thinkingLevel: compactionUpdate.thinkingLevel ?? refreshedUpdate.thinkingLevel,
+				context: compactionUpdate.context ?? refreshedContext,
+				model: compactionUpdate.model ?? refreshedModel,
+				thinkingLevel: compactionUpdate.thinkingLevel ?? refreshedThinkingLevel,
 			};
 		};
 	}
