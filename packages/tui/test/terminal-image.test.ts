@@ -5,7 +5,6 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import { Image } from "../src/components/image.ts";
-import { visibleWidth } from "../src/utils.ts";
 import {
 	deleteAllKittyImages,
 	deleteKittyImage,
@@ -18,6 +17,7 @@ import {
 	setCapabilities,
 	setCellDimensions,
 } from "../src/terminal-image.ts";
+import { visibleWidth } from "../src/utils.ts";
 
 const ENV_KEYS = [
 	"TERM",
