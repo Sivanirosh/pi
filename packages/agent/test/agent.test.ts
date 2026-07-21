@@ -7,6 +7,8 @@ import {
 	type AgentMessage,
 	type AgentTool,
 	type AgentToolUpdateCallback,
+	type StreamFn,
+	setDefaultStreamFn,
 } from "../src/index.ts";
 
 // Mock stream that mimics AssistantMessageEventStream
@@ -65,6 +67,10 @@ function createAssistantToolUseMessage(content: ToolCallContent[]): AssistantMes
 	};
 }
 
+const unusedStreamFunction: StreamFn = () => {
+	throw new Error("Unexpected stream call");
+};
+
 function createDeferred(): {
 	promise: Promise<void>;
 	resolve: () => void;
@@ -77,8 +83,29 @@ function createDeferred(): {
 }
 
 describe("Agent", () => {
+	it("uses the configured default when a legacy caller omits streamFn", async () => {
+		let calls = 0;
+		setDefaultStreamFn(() => {
+			calls++;
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				const message = createAssistantMessage("fallback");
+				stream.push({ type: "done", reason: "stop", message });
+			});
+			return stream;
+		});
+
+		try {
+			const agent = Reflect.construct(Agent, [{}]) as Agent;
+			await agent.prompt("Hello");
+			expect(calls).toBe(1);
+		} finally {
+			setDefaultStreamFn(undefined);
+		}
+	});
+
 	it("should create an agent instance with default state", () => {
-		const agent = new Agent();
+		const agent = new Agent({ streamFn: unusedStreamFunction });
 
 		expect(agent.state).toBeDefined();
 		expect(agent.state.systemPrompt).toBe("");
@@ -95,6 +122,7 @@ describe("Agent", () => {
 	it("should create an agent instance with custom initial state", () => {
 		const customModel = getModel("openai", "gpt-4o-mini");
 		const agent = new Agent({
+			streamFn: unusedStreamFunction,
 			initialState: {
 				systemPrompt: "You are a helpful assistant.",
 				model: customModel,
@@ -108,7 +136,7 @@ describe("Agent", () => {
 	});
 
 	it("should subscribe to events", () => {
-		const agent = new Agent();
+		const agent = new Agent({ streamFn: unusedStreamFunction });
 
 		let eventCount = 0;
 		const unsubscribe = agent.subscribe((_event) => {
@@ -543,7 +571,7 @@ describe("Agent", () => {
 	});
 
 	it("should update state with mutators", () => {
-		const agent = new Agent();
+		const agent = new Agent({ streamFn: unusedStreamFunction });
 
 		// Test setSystemPrompt
 		agent.state.systemPrompt = "Custom prompt";
@@ -582,7 +610,7 @@ describe("Agent", () => {
 	});
 
 	it("should support steering message queue", async () => {
-		const agent = new Agent();
+		const agent = new Agent({ streamFn: unusedStreamFunction });
 
 		const message = { role: "user" as const, content: "Steering message", timestamp: Date.now() };
 		agent.steer(message);
@@ -592,7 +620,7 @@ describe("Agent", () => {
 	});
 
 	it("should support follow-up message queue", async () => {
-		const agent = new Agent();
+		const agent = new Agent({ streamFn: unusedStreamFunction });
 
 		const message = { role: "user" as const, content: "Follow-up message", timestamp: Date.now() };
 		agent.followUp(message);
@@ -602,7 +630,7 @@ describe("Agent", () => {
 	});
 
 	it("should handle abort controller", () => {
-		const agent = new Agent();
+		const agent = new Agent({ streamFn: unusedStreamFunction });
 
 		// Should not throw even if nothing is running
 		expect(() => agent.abort()).not.toThrow();
@@ -807,7 +835,7 @@ describe("Agent", () => {
 		expect(sawAbortSignal).toBe(true);
 	});
 
-	it("forwards sessionId to streamFn options", async () => {
+	it("forwards sessionId to streamFunction options", async () => {
 		let receivedSessionId: string | undefined;
 		const agent = new Agent({
 			sessionId: "session-abc",
