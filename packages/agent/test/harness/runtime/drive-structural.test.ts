@@ -306,7 +306,7 @@ describe("runtime structural drive", () => {
 			{ kind: "run", promptEntryIds: ["user"] },
 			{
 				entries: [
-					{ id: "user", parentId: null, type: "message", message: user("question") },
+					{ id: "user", parentId: null, type: "message", message: user("question".repeat(6000)) },
 					{ id: "assistant", parentId: "user", type: "message", message: fauxAssistantMessage("answer") },
 				],
 			},

@@ -1,8 +1,9 @@
 # Compaction & Branch Summarization
 
-LLMs have limited context windows. When conversations grow too long, Pi uses compaction to summarize older content while preserving recent work. This page covers both auto-compaction and branch summarization.
+LLMs have limited context windows. When conversations grow too long, Pi uses compaction to summarize older content while preserving recent work.
 
 **Source files** ([pi-mono](https://github.com/earendil-works/pi-mono)):
+- [`packages/coding-agent/src/core/agent-session.ts`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/agent-session.ts) - Session wiring and auto-compaction checkpoints
 - [`packages/coding-agent/src/core/compaction/compaction.ts`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/compaction/compaction.ts) - Auto-compaction logic
 - [`packages/coding-agent/src/core/compaction/branch-summarization.ts`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/compaction/branch-summarization.ts) - Branch summarization
 - [`packages/coding-agent/src/core/compaction/utils.ts`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/compaction/utils.ts) - Shared utilities (file tracking, serialization)
@@ -26,13 +27,19 @@ Both use the same structured summary format and track file operations cumulative
 
 ### When It Triggers
 
-Auto-compaction triggers when:
+When enabled, auto-compaction triggers at a safe between-turn checkpoint when:
 
-```
-contextTokens > contextWindow - reserveTokens
+```txt
+contextTokens >= effectiveThreshold
+
+effectiveThreshold = max(
+  min(thresholdTokens, contextWindow - reserveTokens),
+  keepRecentTokens,
+  8192
+)
 ```
 
-By default, `reserveTokens` is 16384 tokens (configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`). This leaves room for the LLM's response.
+Auto-compaction is enabled by default in this fork, including when started through `pic`, and `thresholdTokens` defaults to 160000. Set `"compaction": { "enabled": false }` to opt out. During tool loops, pi checks after an assistant turn and all tool results have completed, before the next provider request starts. The effective trigger is capped at `contextWindow - reserveTokens` so smaller-context models retain room for the LLM response, and it never drops below `keepRecentTokens` or 8192 tokens. If the threshold is exceeded but pi cannot compact safely, the next provider request is blocked instead of sending an oversized context.
 
 During a multi-turn agent run, Pi checks this threshold after tools finish and their results are appended, before starting the next assistant response. If the threshold is crossed, Pi compacts inside the same agent run and resumes with the summary and retained messages. It skips this between-turn check when the completed tool batch terminates the run and no queued message requires another response. Pi also checks the threshold before a new user prompt and after a low-level agent run ends.
 
@@ -403,6 +410,7 @@ Configure compaction in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settin
 {
   "compaction": {
     "enabled": true,
+    "thresholdTokens": 50000,
     "reserveTokens": 16384,
     "keepRecentTokens": 20000
   }
@@ -412,7 +420,8 @@ Configure compaction in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settin
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `enabled` | `true` | Enable auto-compaction |
+| `thresholdTokens` | `160000` | Auto-compaction trigger. Effective value is capped by `contextWindow - reserveTokens` and floored by `keepRecentTokens` and 8192. |
 | `reserveTokens` | `16384` | Tokens to reserve for LLM response |
 | `keepRecentTokens` | `20000` | Recent tokens to keep (not summarized) |
 
-Disable auto-compaction with `"enabled": false`. You can still compact manually with `/compact`.
+Auto-compaction is on by default at 160000 tokens. Set `"enabled": false` to opt out; you can always compact manually with `/compact`.

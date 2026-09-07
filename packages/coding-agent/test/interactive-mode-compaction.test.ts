@@ -194,6 +194,7 @@ describe("InteractiveMode compaction events", () => {
 			kind: "compaction",
 			usage,
 		});
+		expect(fakeThis.showStatus).toHaveBeenCalledWith("Context compacted (123 tokens before compaction)");
 		expect(fakeThis.flushCompactionQueue).toHaveBeenCalledWith({ willRetry: false });
 	});
 

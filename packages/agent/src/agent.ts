@@ -445,6 +445,27 @@ export class Agent {
 	private createLoopConfig(options: { skipInitialSteeringPoll?: boolean } = {}): AgentLoopConfig {
 		let skipInitialSteeringPoll = options.skipInitialSteeringPoll === true;
 		const shouldStopAfterTurn = this.shouldStopAfterTurn;
+		const prepareNextTurn = this.prepareNextTurn;
+		const prepareNextTurnWithContext = this.prepareNextTurnWithContext;
+		const prepareNextTurnForLoop =
+			prepareNextTurn || prepareNextTurnWithContext
+				? async (context: PrepareNextTurnContext) => {
+						const update = await prepareNextTurn?.(this.signal);
+						const contextUpdate = await prepareNextTurnWithContext?.(
+							update?.context ? { ...context, context: update.context } : context,
+							this.signal,
+						);
+						if (!update) return contextUpdate;
+						if (!contextUpdate) return update;
+						return {
+							...update,
+							...contextUpdate,
+							context: contextUpdate.context ?? update.context,
+							model: contextUpdate.model ?? update.model,
+							thinkingLevel: contextUpdate.thinkingLevel ?? update.thinkingLevel,
+						};
+					}
+				: undefined;
 		return {
 			model: this._state.model,
 			reasoning: this._state.thinkingLevel === "off" ? undefined : this._state.thinkingLevel,
@@ -460,15 +481,7 @@ export class Agent {
 			shouldStopAfterTurn: shouldStopAfterTurn
 				? async (context) => await shouldStopAfterTurn(context, this.signal)
 				: undefined,
-			prepareNextTurn:
-				this.prepareNextTurnWithContext || this.prepareNextTurn
-					? async (context) => {
-							if (this.prepareNextTurnWithContext) {
-								return await this.prepareNextTurnWithContext(context, this.signal);
-							}
-							return await this.prepareNextTurn?.(this.signal);
-						}
-					: undefined,
+			prepareNextTurn: prepareNextTurnForLoop,
 			convertToLlm: this.convertToLlm,
 			transformContext: this.transformContext,
 			getApiKey: this.getApiKey,

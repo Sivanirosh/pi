@@ -116,6 +116,7 @@ Set `PI_SKIP_VERSION_CHECK=1` to disable the Pi version update check. Use `--off
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `compaction.enabled` | boolean | `true` | Enable auto-compaction |
+| `compaction.thresholdTokens` | number | `160000` | Auto-compaction trigger; capped by `contextWindow - reserveTokens`, floored by `keepRecentTokens` and 8192 |
 | `compaction.reserveTokens` | number | `16384` | Tokens reserved for LLM response |
 | `compaction.keepRecentTokens` | number | `20000` | Recent tokens to keep (not summarized) |
 
@@ -123,6 +124,7 @@ Set `PI_SKIP_VERSION_CHECK=1` to disable the Pi version update check. Use `--off
 {
   "compaction": {
     "enabled": true,
+    "thresholdTokens": 50000,
     "reserveTokens": 16384,
     "keepRecentTokens": 20000
   }
@@ -330,6 +332,7 @@ See [packages.md](packages.md) for package management details.
   "theme": "dark",
   "compaction": {
     "enabled": true,
+    "thresholdTokens": 160000,
     "reserveTokens": 16384,
     "keepRecentTokens": 20000
   },

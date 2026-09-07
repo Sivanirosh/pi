@@ -224,7 +224,8 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 
 	/**
 	 * Called after `turn_end` when the loop will continue, immediately before the next turn starts.
-	 * Return replacement context/model/thinking state to affect that turn.
+	 * The assistant stream and tool executions have ended; the agent run remains active.
+	 * Return replacement context/model/thinking state to affect that turn, or throw to block it.
 	 * Return undefined to keep using the current context/config.
 	 */
 	prepareNextTurn?: (

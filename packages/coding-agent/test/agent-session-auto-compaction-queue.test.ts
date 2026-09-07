@@ -34,6 +34,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 
 		sessionManager = SessionManager.inMemory();
 		settingsManager = SettingsManager.create(tempDir, tempDir);
+		settingsManager.applyOverrides({ compaction: { enabled: true } });
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
 		const modelRegistry = await createModelRegistry(authStorage, tempDir);
@@ -242,6 +243,20 @@ describe("AgentSession auto-compaction queue resume", () => {
 		await checkCompaction(staleAssistant, false);
 
 		expect(runAutoCompactionSpy).not.toHaveBeenCalled();
+	});
+
+	it("should fail closed before provider request when prospective context exceeds threshold", async () => {
+		settingsManager.applyOverrides({
+			compaction: {
+				enabled: true,
+				keepRecentTokens: 1000,
+				thresholdTokens: 1000,
+			},
+		});
+		session.agent.state.systemPrompt = "s".repeat(4000);
+
+		await expect(session.prompt("x".repeat(40000))).rejects.toThrow(/Stopping before the next provider request/);
+		expect(session.agent.state.messages).toEqual([]);
 	});
 
 	it("should trigger threshold compaction for error messages using last successful usage", async () => {

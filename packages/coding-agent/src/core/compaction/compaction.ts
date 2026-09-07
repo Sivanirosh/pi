@@ -127,12 +127,16 @@ export interface CompactionSettings {
 	enabled: boolean;
 	reserveTokens: number;
 	keepRecentTokens: number;
+	thresholdTokens?: number;
 }
+
+const DEFAULT_COMPACTION_THRESHOLD_TOKENS = 160000;
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	enabled: true,
 	reserveTokens: 16384,
 	keepRecentTokens: 20000,
+	thresholdTokens: DEFAULT_COMPACTION_THRESHOLD_TOKENS,
 };
 
 // ============================================================================
@@ -196,8 +200,9 @@ function getLastAssistantUsageInfo(messages: AgentMessage[]): { usage: Usage; in
 }
 
 /**
- * Estimate context tokens from messages, using the last assistant usage when available.
+ * Estimate context tokens from messages, using the last non-zero assistant usage when available.
  * If there are messages after the last usage, estimate their tokens with estimateTokens.
+ * Providers that omit usage often return a zero-filled usage object; those are ignored.
  */
 export function estimateContextTokens(messages: AgentMessage[]): ContextUsageEstimate {
 	const usageInfo = getLastAssistantUsageInfo(messages);
@@ -230,11 +235,32 @@ export function estimateContextTokens(messages: AgentMessage[]): ContextUsageEst
 }
 
 /**
+ * Resolve the effective compaction threshold from context window, explicit threshold,
+ * reserve budget, and safety floors.
+ */
+const MIN_SAFE_ABSOLUTE = 8192;
+
+export function getEffectiveCompactionThreshold(contextWindow: number, settings: CompactionSettings): number {
+	const windowThreshold = contextWindow - settings.reserveTokens;
+	const configuredThreshold = settings.thresholdTokens;
+	const threshold =
+		typeof configuredThreshold === "number" && Number.isFinite(configuredThreshold) && configuredThreshold > 0
+			? configuredThreshold
+			: DEFAULT_COMPACTION_THRESHOLD_TOKENS;
+	const keepRecent = settings.keepRecentTokens || 20000;
+	const rawThreshold = Math.min(windowThreshold, threshold);
+
+	// Safe floor: threshold must stay >= keepRecentTokens (avoid infinite compaction loops after compaction)
+	// and >= absolute minimum of 8192 (avoid locking Pi out entirely).
+	return Math.max(rawThreshold, keepRecent, MIN_SAFE_ABSOLUTE);
+}
+
+/**
  * Check if compaction should trigger based on context usage.
  */
 export function shouldCompact(contextTokens: number, contextWindow: number, settings: CompactionSettings): boolean {
 	if (!settings.enabled) return false;
-	return contextTokens > contextWindow - settings.reserveTokens;
+	return contextTokens >= getEffectiveCompactionThreshold(contextWindow, settings);
 }
 
 // ============================================================================
