@@ -3,13 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "@earendil-works/pi-agent-core";
 import { type AssistantMessage, createAssistantMessageEventStream, fauxAssistantMessage } from "@earendil-works/pi-ai";
-import { getModel } from "@earendil-works/pi-ai/compat";
+import { getModel, streamSimple } from "@earendil-works/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import { ModelRegistry } from "../src/core/model-registry.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 
 describe("AgentSession auto-compaction queue resume", () => {
@@ -18,13 +18,13 @@ describe("AgentSession auto-compaction queue resume", () => {
 	let settingsManager: SettingsManager;
 	let tempDir: string;
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		tempDir = join(tmpdir(), `pi-auto-compaction-queue-${Date.now()}`);
 		mkdirSync(tempDir, { recursive: true });
-		vi.useFakeTimers();
 
 		const model = getModel("anthropic", "claude-sonnet-4-5")!;
 		const agent = new Agent({
+			streamFn: streamSimple,
 			initialState: {
 				model,
 				systemPrompt: "Test",
@@ -34,23 +34,23 @@ describe("AgentSession auto-compaction queue resume", () => {
 
 		sessionManager = SessionManager.inMemory();
 		settingsManager = SettingsManager.create(tempDir, tempDir);
+		settingsManager.applyOverrides({ compaction: { enabled: true } });
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
-		const modelRegistry = ModelRegistry.create(authStorage, tempDir);
+		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
+		const modelRegistry = await createModelRegistry(authStorage, tempDir);
 
 		session = new AgentSession({
 			agent,
 			sessionManager,
 			settingsManager,
 			cwd: tempDir,
-			modelRegistry,
+			modelRuntime: getModelRuntime(modelRegistry),
 			resourceLoader: createTestResourceLoader(),
 		});
 	});
 
 	afterEach(() => {
 		session.dispose();
-		vi.useRealTimers();
 		vi.restoreAllMocks();
 		if (tempDir && existsSync(tempDir)) {
 			rmSync(tempDir, { recursive: true });
@@ -84,9 +84,9 @@ describe("AgentSession auto-compaction queue resume", () => {
 			timestamp: now - 500,
 		});
 		session.agent.state.messages = sessionManager.buildSessionContext().messages;
-		session.agent.streamFn = (summaryModel) => {
+		session.agent.streamFunction = (summaryModel) => {
 			const stream = createAssistantMessageEventStream();
-			queueMicrotask(() => {
+			void Promise.resolve().then(() => {
 				stream.push({
 					type: "done",
 					reason: "stop",
@@ -243,6 +243,22 @@ describe("AgentSession auto-compaction queue resume", () => {
 		await checkCompaction(staleAssistant, false);
 
 		expect(runAutoCompactionSpy).not.toHaveBeenCalled();
+	});
+
+	it("should fail closed before provider request when prospective context exceeds threshold", async () => {
+		settingsManager.applyOverrides({
+			compaction: {
+				enabled: true,
+				keepRecentTokens: 1000,
+				thresholdTokens: 1000,
+			},
+		});
+		const messagesBefore = session.agent.state.messages.slice();
+		const streamSpy = vi.spyOn(session.agent, "streamFunction");
+
+		await expect(session.prompt("x".repeat(40000))).rejects.toThrow(/Stopping before the next provider request/);
+		expect(session.agent.state.messages).toEqual(messagesBefore);
+		expect(streamSpy).not.toHaveBeenCalled();
 	});
 
 	it("should trigger threshold compaction for error messages using last successful usage", async () => {

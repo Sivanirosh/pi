@@ -1,4 +1,5 @@
-import type { AssistantMessage, Context, ImageContent, Message, TextContent, Usage } from "../types.ts";
+import type { AssistantMessage, ImageContent, Message, TextContent, TranscriptContext, Usage } from "../types.ts";
+import { getSystemMessageText } from "./text.ts";
 
 export interface ContextUsageEstimate {
 	/** Estimated total context tokens. */
@@ -45,6 +46,13 @@ export function estimateTextAndImageContentTokens(content: string | Array<TextCo
 export function estimateMessageTokens(message: Message): number {
 	let chars = 0;
 
+	if (message.role === "system") {
+		return (
+			estimateTextTokens(getSystemMessageText(message)) +
+			estimateToolsTokens(message.toolsAdded) +
+			estimateToolsTokens(message.toolsRemoved)
+		);
+	}
 	if (message.role === "user") return estimateTextAndImageContentTokens(message.content);
 	if (message.role === "toolResult") return estimateTextAndImageContentTokens(message.content);
 
@@ -86,7 +94,8 @@ function getLastAssistantUsageInfo(messages: readonly Message[]): { usage: Usage
 	return usageInfo;
 }
 
-function estimateMessages(messages: readonly Message[]): ContextUsageEstimate {
+export function estimateContextTokens(context: TranscriptContext | readonly Message[]): ContextUsageEstimate {
+	const messages = "messages" in context ? context.messages : context;
 	const usageInfo = getLastAssistantUsageInfo(messages);
 	if (usageInfo) {
 		const usageTokens = calculateContextTokens(usageInfo.usage);
@@ -102,25 +111,7 @@ function estimateMessages(messages: readonly Message[]): ContextUsageEstimate {
 	return { tokens, usageTokens: 0, trailingTokens: tokens, lastUsageIndex: null };
 }
 
-function isMessageArray(value: Context | readonly Message[]): value is readonly Message[] {
-	return Array.isArray(value);
-}
-
-export function estimateContextTokens(context: Context | readonly Message[]): ContextUsageEstimate {
-	if (isMessageArray(context)) return estimateMessages(context);
-
-	const estimate = estimateMessages(context.messages);
-	if (estimate.lastUsageIndex !== null) return estimate;
-
-	let prefixTokens = context.systemPrompt ? estimateTextTokens(context.systemPrompt) : 0;
-	if (context.tools && context.tools.length > 0) {
-		prefixTokens += estimateTextTokens(safeJsonStringify(context.tools));
-	}
-
-	return {
-		tokens: estimate.tokens + prefixTokens,
-		usageTokens: estimate.usageTokens,
-		trailingTokens: estimate.trailingTokens + prefixTokens,
-		lastUsageIndex: estimate.lastUsageIndex,
-	};
+function estimateToolsTokens(tools: readonly unknown[] | undefined): number {
+	if (!tools || tools.length === 0) return 0;
+	return estimateTextTokens(safeJsonStringify(tools));
 }

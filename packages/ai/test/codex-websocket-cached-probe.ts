@@ -9,15 +9,15 @@
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Type } from "typebox";
-import { AuthStorage } from "../../coding-agent/src/core/auth-storage.ts";
+import { ModelRuntime } from "../../coding-agent/src/core/model-runtime.ts";
 import {
 	closeOpenAICodexWebSocketSessions,
 	getOpenAICodexWebSocketDebugStats,
 	resetOpenAICodexWebSocketDebugStats,
 	stream as streamOpenAICodexResponses,
 } from "../src/api/openai-codex-responses.ts";
-import { getModel } from "../src/compat.ts";
-import type { AssistantMessage, Context, Message, Model, Tool, ToolResultMessage, Transport } from "../src/types.ts";
+import { getModel, normalizeContext } from "../src/compat.ts";
+import type { AssistantMessage, Message, Model, Tool, ToolResultMessage, Transport } from "../src/types.ts";
 
 type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -166,17 +166,18 @@ async function main(): Promise<void> {
 	const model = getModel("openai-codex", "gpt-5.5") as Model<"openai-codex-responses"> | undefined;
 	if (!model) throw new Error("Model openai-codex/gpt-5.5 not found");
 	const modelWithMaxTokens = { ...model, maxTokens: args.maxTokens };
-	const authStorage = AuthStorage.create();
-	const apiKey = (await authStorage.getApiKey("openai-codex")) ?? (await authStorage.getApiKey("openai"));
+	const modelRuntime = await ModelRuntime.create();
+	const apiKey =
+		(await modelRuntime.getAuth("openai-codex"))?.auth.apiKey ?? (await modelRuntime.getAuth("openai"))?.auth.apiKey;
 	if (!apiKey) {
 		throw new Error("No OpenAI Codex API key found in coding-agent auth storage.");
 	}
-	const context: Context = {
+	const context = normalizeContext({
 		systemPrompt:
 			"You are participating in a benchmark. For each benchmark turn, call deterministic_probe exactly once before the final answer. Keep final answers minimal.",
 		messages: [],
 		tools: [deterministicProbeTool()],
-	};
+	});
 	const elapsed: number[] = [];
 	resetOpenAICodexWebSocketDebugStats(args.sessionId);
 

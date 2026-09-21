@@ -11,6 +11,7 @@ import {
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateContextTokens,
 	findCutPoint,
+	getEffectiveCompactionThreshold,
 	getLastAssistantUsage,
 	prepareCompaction,
 	shouldCompact,
@@ -292,6 +293,23 @@ describe("shouldCompact", () => {
 
 		expect(shouldCompact(95000, 100000, settings)).toBe(false);
 	});
+
+	it("should honor explicit threshold with safety floors", () => {
+		const settings: CompactionSettings = {
+			enabled: true,
+			reserveTokens: 10000,
+			keepRecentTokens: 20000,
+			thresholdTokens: 50000,
+		};
+
+		expect(getEffectiveCompactionThreshold(100000, settings)).toBe(50000);
+		expect(shouldCompact(50000, 100000, settings)).toBe(true);
+		expect(shouldCompact(49999, 100000, settings)).toBe(false);
+		expect(getEffectiveCompactionThreshold(100000, { ...settings, thresholdTokens: 1000 })).toBe(20000);
+		expect(
+			getEffectiveCompactionThreshold(100000, { ...settings, keepRecentTokens: 1000, thresholdTokens: 1000 }),
+		).toBe(8192);
+	});
 });
 
 describe("findCutPoint", () => {
@@ -372,6 +390,42 @@ describe("findCutPoint", () => {
 		expect(customFitsBudget.firstKeptEntryIndex).toBe(2);
 		expect(customFitsBudget.isSplitTurn).toBe(false);
 		expect(customFitsBudget.turnStartIndex).toBe(-1);
+	});
+
+	// Regression test for #9740.
+	it("should fall back to the latest valid cut point before oversized trailing tool results", () => {
+		const oldUser = createMessageEntry(createUserMessage("old history"));
+		const oldAssistant = createMessageEntry(createAssistantMessage("old answer"));
+		const currentUser = createMessageEntry(createUserMessage("read the large file"));
+		const toolCall = createMessageEntry({
+			...createAssistantMessage(""),
+			content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "big.txt" } }],
+			stopReason: "toolUse",
+		});
+		const toolResult = createMessageEntry({
+			role: "toolResult",
+			toolCallId: "call-1",
+			toolName: "read",
+			content: [{ type: "text", text: "x".repeat(8000) }],
+			isError: false,
+			timestamp: Date.now(),
+		});
+		const entries = [oldUser, oldAssistant, currentUser, toolCall, toolResult];
+
+		const result = findCutPoint(entries, 0, entries.length, 1000);
+		expect(result).toEqual({
+			firstKeptEntryIndex: 3,
+			turnStartIndex: 2,
+			isSplitTurn: true,
+		});
+
+		const preparation = prepareCompaction(entries, {
+			...DEFAULT_COMPACTION_SETTINGS,
+			keepRecentTokens: 1000,
+		});
+		expect(preparation?.firstKeptEntryId).toBe(toolCall.id);
+		expect(preparation?.messagesToSummarize).toEqual([oldUser.message, oldAssistant.message]);
+		expect(preparation?.turnPrefixMessages).toEqual([currentUser.message]);
 	});
 });
 
@@ -458,6 +512,29 @@ describe("buildSessionContext", () => {
 		// model_change is later overwritten by assistant message's model info
 		expect(loaded.model).toEqual({ provider: "anthropic", modelId: "claude-sonnet-4-5" });
 		expect(loaded.thinkingLevel).toBe("high");
+	});
+});
+
+describe("prepareCompaction", () => {
+	it("does not treat system messages as conversation history", () => {
+		const system = createMessageEntry({
+			role: "system",
+			content: "",
+			sections: { preamble: "current prompt" },
+			timestamp: Date.now(),
+		});
+		const user = createMessageEntry(createUserMessage("one long turn"));
+		const assistant = createMessageEntry(createAssistantMessage("assistant suffix"));
+		const preparation = prepareCompaction([system, user, assistant], {
+			...DEFAULT_COMPACTION_SETTINGS,
+			keepRecentTokens: 1,
+		});
+
+		expect(preparation).toBeDefined();
+		expect(preparation?.firstKeptEntryId).toBe(assistant.id);
+		expect(preparation?.isSplitTurn).toBe(true);
+		expect(preparation?.messagesToSummarize).toEqual([]);
+		expect(preparation?.turnPrefixMessages).toEqual([user.message]);
 	});
 });
 
