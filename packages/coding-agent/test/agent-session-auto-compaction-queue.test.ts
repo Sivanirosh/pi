@@ -253,10 +253,12 @@ describe("AgentSession auto-compaction queue resume", () => {
 				thresholdTokens: 1000,
 			},
 		});
-		session.agent.state.systemPrompt = "s".repeat(4000);
+		const messagesBefore = session.agent.state.messages.slice();
+		const streamSpy = vi.spyOn(session.agent, "streamFunction");
 
 		await expect(session.prompt("x".repeat(40000))).rejects.toThrow(/Stopping before the next provider request/);
-		expect(session.agent.state.messages).toEqual([]);
+		expect(session.agent.state.messages).toEqual(messagesBefore);
+		expect(streamSpy).not.toHaveBeenCalled();
 	});
 
 	it("should trigger threshold compaction for error messages using last successful usage", async () => {
